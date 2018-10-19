@@ -79,6 +79,14 @@ AC_ARG_ENABLE(java-analyzers,
 BUILD_JAVA_ANALYZERS=$enable_java_analyzers
 AC_SUBST([BUILD_JAVA_ANALYZERS])
 
+AC_ARG_ENABLE(ada-analyzers,
+  AS_HELP_STRING([--disable-ada-analyzers],
+    [do not build the Ada analyzers (default is to build them)]),
+  ,
+  enable_ada_analyzers=yes)
+BUILD_ADA_ANALYZERS=$enable_ada_analyzers
+AC_SUBST([BUILD_ADA_ANALYZERS])
+
 AC_ARG_WITH(fcp-clang,
   AS_HELP_STRING([--with-fcp-clang],
     [use $CLANG_PREFIX/bin/clang to override the default compiler (default is not to override)]),

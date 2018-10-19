@@ -73,6 +73,7 @@ type build_system =
   | BMvn
   | BNdk
   | BXcode
+  | BGprBuild
 [@@deriving compare]
 
 let equal_build_system = [%compare.equal: build_system]
@@ -100,7 +101,8 @@ let build_system_exe_assoc =
   ; (BMvn, "mvn")
   ; (BMvn, "mvnw")
   ; (BNdk, "ndk-build")
-  ; (BXcode, "xcodebuild") ]
+  ; (BXcode, "xcodebuild")
+  ; (BGprBuild, "gprbuild") ]
 
 
 let string_of_build_system build_system =

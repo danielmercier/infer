@@ -24,6 +24,7 @@ type mode =
   | Maven of string * string list
   | PythonCapture of Config.build_system * string list
   | XcodeXcpretty of string * string list
+  | AdaCapture of string * string list
 [@@deriving compare]
 
 let equal_mode = [%compare.equal: mode]
@@ -50,6 +51,8 @@ let pp_mode fmt = function
       F.fprintf fmt "Maven driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | Clang (_, prog, args) ->
       F.fprintf fmt "Clang driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
+  | AdaCapture (prog, args) ->
+      F.fprintf fmt "Ada driver mode:@\nprog= '%s'@\nargs = %a" prog Pp.cli_args args
 
 
 (* A clean command for each driver mode to be suggested to the user
@@ -296,6 +299,8 @@ let capture ~changed_files = function
         CaptureCompilationDatabase.get_compilation_database_files_xcodebuild ~prog ~args
       in
       capture_with_compilation_database ~changed_files json_cdb
+  | AdaCapture (prog, args) ->
+      Ada.capture prog args
 
 
 (* shadowed for tracing *)
@@ -428,6 +433,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
         Version.clang_enabled
     | `Java ->
         Version.java_enabled
+    | `Ada ->
+        Version.ada_enabled
     | `Xcode ->
         Version.clang_enabled && Version.xcode_enabled
   in
@@ -438,6 +445,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
           "clang"
       | `Java ->
           "java"
+      | `Ada ->
+          "ada"
       | `Xcode ->
           "clang and xcode"
     in
@@ -455,6 +464,8 @@ let assert_supported_build_system build_system =
       Config.string_of_build_system build_system |> assert_supported_mode `Clang
   | BXcode ->
       Config.string_of_build_system build_system |> assert_supported_mode `Xcode
+  | BGprBuild ->
+      Config.string_of_build_system build_system |> assert_supported_mode `Ada
   | BBuck ->
       let analyzer, build_string =
         if Config.flavors then (`Clang, "buck with flavors")
@@ -510,7 +521,9 @@ let mode_of_build_command build_cmd =
              set --no-linters to disable them and this warning.@." ;
           PythonCapture (BBuck, build_cmd)
       | (BAnt | BBuck | BGradle | BNdk | BXcode) as build_system ->
-          PythonCapture (build_system, build_cmd) )
+          PythonCapture (build_system, build_cmd)
+      | BGprBuild ->
+          AdaCapture (prog, args) )
 
 
 let mode_from_command_line =

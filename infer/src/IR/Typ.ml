@@ -794,8 +794,14 @@ module Procname = struct
   being the name of the struct, [None] means the parameter is of some other type. *)
     type clang_parameter = Name.t option [@@deriving compare]
 
-    (** Type for parameters in procnames, for java and clang. *)
-    type t = JavaParameter of Java.java_type | ClangParameter of clang_parameter
+    (** Type for an Ada parameter. Here, an Ada parameter is a string that uniquely identifies the type *)
+    type ada_parameter = string [@@deriving compare]
+
+    (** Type for parameters in procnames, for java, clang and ada. *)
+    type t =
+      | JavaParameter of Java.java_type
+      | ClangParameter of clang_parameter
+      | AdaParameter of ada_parameter
     [@@deriving compare]
 
     let of_typ typ =
@@ -974,10 +980,46 @@ module Procname = struct
     let replace_parameters new_parameters block = {block with parameters= new_parameters}
   end
 
+  module Ada = struct
+    (** Type of Ada procedures *)
+
+    (** To uniquely identifies an Ada procedure, we use:
+      *  - A mangled name, where the plain part is the name coming from the sources,
+      *      the mangled part is a string that uniquely identifies the procedure
+      *
+      *  - The parameters is the list of the types of each parameter of the subprogram.
+      *      Each ada_parameter is a string that uniquely identifies the type.
+      *
+      *  - The return type is None for a procedure or the "ada_parameter" of the
+      *      returned value for a function *)
+    type t =
+      { name: Mangled.t
+      ; parameters: Parameter.ada_parameter list
+      ; return: Parameter.ada_parameter option }
+    [@@deriving compare]
+
+    let make name parameters return = {name; parameters; return}
+
+    let parameters_to_string parameters =
+      if List.is_empty parameters then "" else "(" ^ String.concat ~sep:"," parameters ^ ")"
+
+
+    let to_string {name} verbose =
+      match verbose with
+      | Simple | Non_verbose ->
+          Mangled.to_string name
+      | Verbose ->
+          Mangled.to_string_full name
+
+
+    let replace_parameters new_parameters proc = {proc with parameters= new_parameters}
+  end
+
   (** Type of procedure names. *)
   type t =
     | Java of Java.t
     | C of C.t
+    | Ada of Ada.t
     | Linters_dummy_method
     | Block of Block.t
     | ObjC_Cpp of ObjC_Cpp.t
@@ -1028,7 +1070,7 @@ module Procname = struct
         ObjC_Cpp {osig with class_name= new_class}
     | WithBlockParameters (base, blocks) ->
         WithBlockParameters (replace_class base new_class, blocks)
-    | C _ | Block _ | Linters_dummy_method ->
+    | Ada _ | C _ | Block _ | Linters_dummy_method ->
         t
 
 
@@ -1060,7 +1102,7 @@ module Procname = struct
         ObjC_Cpp {osig with method_name= new_method_name}
     | WithBlockParameters (base, blocks) ->
         WithBlockParameters (objc_cpp_replace_method_name base new_method_name, blocks)
-    | C _ | Block _ | Linters_dummy_method | Java _ ->
+    | C _ | Block _ | Linters_dummy_method | Java _ | Ada _ ->
         t
 
 
@@ -1078,6 +1120,8 @@ module Procname = struct
         j.method_name
     | Linters_dummy_method ->
         "Linters_dummy_method"
+    | Ada {name} ->
+        Mangled.to_string_full name
 
 
   (** Return whether the procname is a block procname. *)
@@ -1097,6 +1141,8 @@ module Procname = struct
         Language.Clang
     | Java _ ->
         Language.Java
+    | Ada _ ->
+        Language.Ada
 
 
   (** [is_constructor pname] returns true if [pname] is a constructor *)
@@ -1147,6 +1193,8 @@ module Procname = struct
         C.to_string osig Verbose
     | ObjC_Cpp osig ->
         ObjC_Cpp.to_string osig Verbose
+    | Ada asig ->
+        Ada.to_string asig Verbose
     | Block bsig ->
         Block.to_string bsig Verbose
     | WithBlockParameters (base, blocks) ->
@@ -1164,6 +1212,8 @@ module Procname = struct
         C.to_string osig Non_verbose
     | ObjC_Cpp osig ->
         ObjC_Cpp.to_string osig Non_verbose
+    | Ada asig ->
+        Ada.to_string asig Non_verbose
     | Block bsig ->
         Block.to_string bsig Non_verbose
     | WithBlockParameters (base, blocks) ->
@@ -1181,6 +1231,8 @@ module Procname = struct
         C.to_string osig Simple
     | ObjC_Cpp osig ->
         ObjC_Cpp.to_string osig Simple
+    | Ada asig ->
+        Ada.to_string asig Simple
     | Block bsig ->
         Block.to_string bsig Simple
     | WithBlockParameters (base, _) ->
@@ -1223,32 +1275,42 @@ module Procname = struct
         clang_param_to_param (Block.get_parameters bsig)
     | WithBlockParameters (base, _) ->
         get_parameters base
+    | Ada {parameters} ->
+        List.map ~f:(fun par -> Parameter.AdaParameter par) parameters
     | Linters_dummy_method ->
         []
 
 
   let rec replace_parameters new_parameters procname =
-    let params_to_java_params params =
+    let filter_params filter name params =
       List.map
         ~f:(fun param ->
-          match param with
-          | Parameter.JavaParameter par ->
+          match filter param with
+          | Some par ->
               par
-          | _ ->
+          | None ->
+              let param_name =
+                match param with
+                | Parameter.ClangParameter _ ->
+                    "Clang"
+                | Parameter.JavaParameter _ ->
+                    "Java"
+                | Parameter.AdaParameter _ ->
+                    "Ada"
+              in
               Logging.(die InternalError)
-                "Expected Java parameters in Java procname, but got Clang parameters" params )
+                "Expected %s parameters in %s procname, but got %s parameters" name name param_name
+                params )
         params
     in
-    let params_to_clang_params params =
-      List.map
-        ~f:(fun param ->
-          match param with
-          | Parameter.ClangParameter par ->
-              par
-          | _ ->
-              Logging.(die InternalError)
-                "Expected Clang parameters in Clang procname, but got Java parameters" params )
-        params
+    let params_to_java_params =
+      filter_params (function Parameter.JavaParameter par -> Some par | _ -> None) "Java"
+    in
+    let params_to_clang_params =
+      filter_params (function Parameter.ClangParameter par -> Some par | _ -> None) "Clang"
+    in
+    let params_to_ada_params =
+      filter_params (function Parameter.AdaParameter par -> Some par | _ -> None) "Ada"
     in
     match procname with
     | Java j ->
@@ -1257,6 +1319,8 @@ module Procname = struct
         C (C.replace_parameters (params_to_clang_params new_parameters) osig)
     | ObjC_Cpp osig ->
         ObjC_Cpp (ObjC_Cpp.replace_parameters (params_to_clang_params new_parameters) osig)
+    | Ada asig ->
+        Ada (Ada.replace_parameters (params_to_ada_params new_parameters) asig)
     | Block bsig ->
         Block (Block.replace_parameters (params_to_clang_params new_parameters) bsig)
     | WithBlockParameters (base, blocks) ->

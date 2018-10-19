@@ -25,6 +25,7 @@ function usage() {
   echo "   all      build everything (default)"
   echo "   clang    build C and Objective-C analyzer"
   echo "   java     build Java analyzer"
+  echo "   ada      build Ada analyzer"
   echo
   echo " options:"
   echo "   -h,--help             show this message"
@@ -34,14 +35,15 @@ function usage() {
   echo "   -y,--yes              automatically agree to everything"
   echo
   echo " examples:"
-  echo "    $0               # build Java and C/Objective-C analyzers"
-  echo "    $0 java clang    # equivalent way of doing the above"
-  echo "    $0 java          # build only the Java analyzer"
+  echo "    $0                   # build Java, C/Objective-C and Ada analyzers"
+  echo "    $0 java clang ada    # equivalent way of doing the above"
+  echo "    $0 java              # build only the Java analyzer"
 }
 
 # arguments
 BUILD_CLANG=${BUILD_CLANG:-no}
 BUILD_JAVA=${BUILD_JAVA:-no}
+BUILD_ADA=${BUILD_ADA:-no}
 INFER_CONFIGURE_OPTS=${INFER_CONFIGURE_OPTS:-""}
 INFER_OPAM_SWITCH=${INFER_OPAM_SWITCH:-$INFER_OPAM_SWITCH_DEFAULT}
 INTERACTIVE=${INTERACTIVE:-yes}
@@ -58,6 +60,7 @@ while [[ $# > 0 ]]; do
     all)
       BUILD_CLANG=yes
       BUILD_JAVA=yes
+      BUILD_ADA=yes
       shift
       continue
       ;;
@@ -68,6 +71,11 @@ while [[ $# > 0 ]]; do
       ;;
     java)
       BUILD_JAVA=yes
+      shift
+      continue
+      ;;
+    ada)
+      BUILD_ADA=yes
       shift
       continue
       ;;
@@ -102,10 +110,11 @@ while [[ $# > 0 ]]; do
   shift
 done
 
-# if no arguments then build both clang and Java
-if [ "$BUILD_CLANG" == "no" ] && [ "$BUILD_JAVA" == "no" ]; then
+# if no arguments then build clang, Java and Ada
+if [ "$BUILD_CLANG" == "no" ] && [ "$BUILD_JAVA" == "no" ] && [ "$BUILD_ADA" == "no" ]; then
   BUILD_CLANG=yes
   BUILD_JAVA=yes
+  BUILD_ADA=yes
 fi
 
 # enable --yes option for some commands in non-interactive mode
@@ -158,6 +167,9 @@ if [ "$BUILD_CLANG" == "no" ]; then
 fi
 if [ "$BUILD_JAVA" == "no" ]; then
   INFER_CONFIGURE_OPTS+=" --disable-java-analyzers"
+fi
+if [ "$BUILD_ADA" == "no" ]; then
+  INFER_CONFIGURE_OPTS+=" --disable-ada-analyzers"
 fi
 
 ./configure $INFER_CONFIGURE_OPTS

@@ -407,8 +407,14 @@ module Procname : sig
 being the name of the struct, [None] means the parameter is of some other type. *)
     type clang_parameter = Name.t option [@@deriving compare]
 
-    (** Type for parameters in procnames, for java and clang. *)
-    type t = JavaParameter of Java.java_type | ClangParameter of clang_parameter
+    (** Type for an Ada parameter. Here, an Ada parameter is a string that uniquely identifies the type *)
+    type ada_parameter = string [@@deriving compare]
+
+    (** Type for parameters in procnames, for java, clang and ada. *)
+    type t =
+      | JavaParameter of Java.java_type
+      | ClangParameter of clang_parameter
+      | AdaParameter of ada_parameter
     [@@deriving compare]
 
     val of_typ : typ -> clang_parameter
@@ -490,6 +496,27 @@ being the name of the struct, [None] means the parameter is of some other type. 
     val make : block_name -> Parameter.clang_parameter list -> t
   end
 
+  module Ada : sig
+    (** Type of Ada subprogram *)
+
+    (** To uniquely identifies an Ada procedure, we use:
+      *  - A mangled name, where the plain part is the name coming from the sources,
+      *      the mangled part is a string that uniquely identifies the procedure
+      *
+      *  - The parameters is the list of the types of each parameter of the subprogram.
+      *      Each ada_parameter is a string that uniquely identifies the type.
+      *
+      *  - The return type is None for a procedure or the "ada_parameter" of the
+      *      returned value for a function *)
+    type t =
+      { name: Mangled.t
+      ; parameters: Parameter.ada_parameter list
+      ; return: Parameter.ada_parameter option }
+    [@@deriving compare]
+
+    val make : Mangled.t -> Parameter.ada_parameter list -> Parameter.ada_parameter option -> t
+  end
+
   (** Type of procedure names.
   WithBlockParameters is used for creating an instantiation of a method that contains block parameters
   and it's called with concrete blocks. For example:
@@ -499,6 +526,7 @@ being the name of the struct, [None] means the parameter is of some other type. 
   type t =
     | Java of Java.t
     | C of C.t
+    | Ada of Ada.t
     | Linters_dummy_method
     | Block of Block.t
     | ObjC_Cpp of ObjC_Cpp.t
