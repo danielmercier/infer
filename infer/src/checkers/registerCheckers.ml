@@ -69,7 +69,9 @@ let all_checkers =
     ; callbacks= [(Procedure ImmutableChecker.callback_check_immutable_cast, Language.Java)] }
   ; { name= "liveness"
     ; active= Config.liveness
-    ; callbacks= [(Procedure Liveness.checker, Language.Clang)] }
+    ; callbacks=
+        [(Procedure Liveness.checker, Language.Clang); (Procedure Liveness.checker, Language.Ada)]
+    }
   ; { name= "printf args"
     ; active= Config.printf_args
     ; callbacks= [(Procedure PrintfArgs.callback_printf_args, Language.Java)] }
