@@ -22,6 +22,15 @@ let trans_type_decl tenv type_decl =
           Typ.(mk (Tint IInt))
       | `TypeDecl {f_name= (lazy (Some name))} when String.equal (AdaNode.text name) "Boolean" ->
           Typ.(mk (Tint IBool))
+      | `SubtypeDecl {f_subtype= (lazy subtype)} -> (
+          let name = SubtypeIndication.f_name subtype in
+          match AdaNode.p_xref name >>= DefiningName.p_basic_decl with
+          | Some (#BaseTypeDecl.t as subtype_decl) ->
+              aux subtype_decl
+          | Some subtype_decl ->
+              unimplemented "trans_type for %s" (AdaNode.short_image subtype_decl)
+          | None ->
+              L.die InternalError "Cannot generate a type for %s" (AdaNode.short_image type_decl) )
       | _ ->
           unimplemented "trans_type for %s" (AdaNode.short_image type_decl) )
   in
