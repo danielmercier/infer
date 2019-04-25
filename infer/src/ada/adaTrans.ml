@@ -52,7 +52,7 @@ let trans_subp_body ctx subp =
 
 let trans_subp cfg tenv source_file subp =
   let proc_desc = trans_spec cfg tenv source_file subp in
-  let ctx = {cfg; tenv; source_file; proc_desc} in
+  let ctx = mk_context cfg tenv source_file proc_desc in
   match (subp :> BaseSubpBody.t) with
   | `SubpBody _ as subp_body ->
       trans_subp_body ctx subp_body

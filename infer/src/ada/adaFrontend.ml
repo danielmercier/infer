@@ -15,9 +15,20 @@ let unimplemented fmt =
   F.kasprintf (fun msg -> L.die InternalError "%s is not implemented" msg) fmt
 
 
-type context = {cfg: Cfg.t; tenv: Tenv.t; source_file: SourceFile.t; proc_desc: Procdesc.t}
-
 module Label = Int
+module LoopMap = Caml.Map.Make (DefiningName)
+
+type context =
+  { cfg: Cfg.t
+  ; tenv: Tenv.t
+  ; source_file: SourceFile.t
+  ; proc_desc: Procdesc.t
+  ; loop_map: Label.t LoopMap.t
+  ; current_loop: Label.t option }
+
+let mk_context cfg tenv source_file proc_desc =
+  {cfg; tenv; source_file; proc_desc; loop_map= LoopMap.empty; current_loop= None}
+
 
 let mk_label =
   let lbl = ref 0 in

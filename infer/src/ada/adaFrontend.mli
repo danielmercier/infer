@@ -10,9 +10,20 @@ open Libadalang
 
 val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
 
-type context = {cfg: Cfg.t; tenv: Tenv.t; source_file: SourceFile.t; proc_desc: Procdesc.t}
-
 module Label = Int
+
+module LoopMap : Caml.Map.S with type key = DefiningName.t
+
+type context =
+  { cfg: Cfg.t
+  ; tenv: Tenv.t
+  ; source_file: SourceFile.t
+  ; proc_desc: Procdesc.t
+  ; loop_map: Label.t LoopMap.t
+  ; current_loop: Label.t option }
+
+val mk_context : Cfg.t -> Tenv.t -> SourceFile.t -> Procdesc.t -> context
+(** Creates a new context with given arguments *)
 
 val mk_label : unit -> Label.t
 (** Creates a new fresh label *)

@@ -47,6 +47,29 @@ let trans_simple_stmt ctx simple_stmt =
   | `CallStmt {f_call= (lazy call)} ->
       let stmts, (instrs, _) = trans_expr ctx (Tmp "call") call in
       stmts @ [Block {instrs; loc; nodekind= Procdesc.Node.(Stmt_node (Call (AdaNode.text call)))}]
+  | `ExitStmt {f_loop_name= (lazy loop_name_opt); f_cond_expr= (lazy cond_expr)} -> (
+      let label =
+        match loop_name_opt with
+        | Some loop_name -> (
+          match AdaNode.p_xref loop_name >>= fun ref -> LoopMap.find_opt ref ctx.loop_map with
+          | Some label ->
+              label
+          | None ->
+              L.die InternalError "Cannot exit loop name %s" (AdaNode.short_image loop_name) )
+        | None -> (
+          match ctx.current_loop with
+          | Some label ->
+              label
+          | None ->
+              L.die InternalError "Exit stmt not inside a loop" )
+      in
+      match cond_expr with
+      | Some expr ->
+          (* We exit only if the condition is true *)
+          let stmts, () = trans_expr ctx (Goto (Label label, Next)) expr in
+          stmts
+      | None ->
+          [Jump (Label label)] )
   | _ ->
       unimplemented "trans_simple_stmt for %s" (AdaNode.short_image simple_stmt)
 
