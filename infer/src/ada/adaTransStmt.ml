@@ -44,6 +44,9 @@ let trans_simple_stmt ctx simple_stmt =
       [Jump Exit]
   | `NullStmt _ ->
       []
+  | `CallStmt {f_call= (lazy call)} ->
+      let stmts, (instrs, _) = trans_expr ctx (Tmp "call") call in
+      stmts @ [Block {instrs; loc; nodekind= Procdesc.Node.(Stmt_node (Call (AdaNode.text call)))}]
   | _ ->
       unimplemented "trans_simple_stmt for %s" (AdaNode.short_image simple_stmt)
 
