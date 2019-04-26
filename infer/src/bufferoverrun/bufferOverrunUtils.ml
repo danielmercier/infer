@@ -79,6 +79,9 @@ module Exec = struct
             (Dom.Val.of_c_array_alloc allocsite ~stride ~offset ~size ~traces, Some offset)
         | Language.Java ->
             (Dom.Val.of_java_array_alloc allocsite ~length:size ~traces, None)
+
+        | Language.Ada ->
+            L.die InternalError "decl_local_array not implemented for Ada"
       in
       let arr = Dom.Val.sets_represents_multiple_values arr ~represents_multiple_values in
       let mem = Dom.Mem.init_array_relation allocsite ~offset_opt ~size ~size_exp_opt:None mem in

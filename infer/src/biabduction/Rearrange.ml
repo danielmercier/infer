@@ -457,7 +457,11 @@ let mk_ptsto_exp_footprint pname tenv orig_prop (lexp, typ) max_stamp inst :
       raise (Exceptions.Dangling_pointer_dereference (None, err_desc, __POS__)) ) ;
   let off_foot, eqs = laundry_offset_for_footprint max_stamp off in
   let subtype =
-    match !Language.curr_language with Clang -> Subtype.exact | Java -> Subtype.subtypes
+    match !Language.curr_language with
+    | Clang | Java ->
+        Subtype.subtypes
+    | Ada ->
+        L.die InternalError "mk_ptsto_exp_footprint not implemented for Ada"
   in
   let create_ptsto footprint_part off0 =
     match (root, off0, typ.Typ.desc) with

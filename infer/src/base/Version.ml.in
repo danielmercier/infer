@@ -43,6 +43,8 @@ let clang_enabled = is_yes "@BUILD_C_ANALYZERS@"
 
 let java_enabled = is_yes "@BUILD_JAVA_ANALYZERS@"
 
+let ada_enabled = is_yes "@BUILD_ADA_ANALYZERS@"
+
 let is_jdk11 = is_yes "@JDK11_ENABLED@"
 
 let xcode_enabled = is_not_no "@XCODE_SELECT@"

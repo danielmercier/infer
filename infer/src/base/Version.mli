@@ -23,6 +23,8 @@ val clang_enabled : bool
 
 val java_enabled : bool
 
+val ada_enabled : bool
+
 val is_jdk11 : bool
 
 val xcode_enabled : bool
