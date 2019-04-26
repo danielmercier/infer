@@ -17,17 +17,25 @@ let unimplemented fmt =
 
 module Label = Int
 module LoopMap = Caml.Map.Make (DefiningName)
+module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
 
 type context =
   { cfg: Cfg.t
   ; tenv: Tenv.t
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
+  ; label_table: Label.t DefiningNameTable.t
   ; loop_map: Label.t LoopMap.t
   ; current_loop: Label.t option }
 
 let mk_context cfg tenv source_file proc_desc =
-  {cfg; tenv; source_file; proc_desc; loop_map= LoopMap.empty; current_loop= None}
+  { cfg
+  ; tenv
+  ; source_file
+  ; proc_desc
+  ; label_table= DefiningNameTable.create 24
+  ; loop_map= LoopMap.empty
+  ; current_loop= None }
 
 
 let mk_label =
@@ -35,6 +43,16 @@ let mk_label =
   fun () ->
     lbl := !lbl + 1 ;
     !lbl
+
+
+let find_or_add ctx name =
+  match DefiningNameTable.find_opt ctx.label_table (name :> DefiningName.t) with
+  | Some label ->
+      label
+  | None ->
+      let label = mk_label () in
+      DefiningNameTable.add ctx.label_table (name :> DefiningName.t) label ;
+      label
 
 
 type jump_kind = Next | Label of Label.t | Exit

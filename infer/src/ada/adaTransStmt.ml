@@ -70,6 +70,11 @@ let trans_simple_stmt ctx simple_stmt =
           stmts
       | None ->
           [Jump (Label label)] )
+  | `Label {f_decl= (lazy (`LabelDecl {f_name= (lazy name)}))} ->
+      [Label (find_or_add ctx name)]
+  | `GotoStmt {f_label_name= (lazy name)} ->
+      let name_ref = Option.value_exn (AdaNode.p_xref name) in
+      [Jump (Label (find_or_add ctx name_ref))]
   | _ ->
       unimplemented "trans_simple_stmt for %s" (AdaNode.short_image simple_stmt)
 

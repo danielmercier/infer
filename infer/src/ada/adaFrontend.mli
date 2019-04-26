@@ -14,11 +14,14 @@ module Label = Int
 
 module LoopMap : Caml.Map.S with type key = DefiningName.t
 
+module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
+
 type context =
   { cfg: Cfg.t
   ; tenv: Tenv.t
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
+  ; label_table: Label.t DefiningNameTable.t
   ; loop_map: Label.t LoopMap.t
   ; current_loop: Label.t option }
 
@@ -27,6 +30,10 @@ val mk_context : Cfg.t -> Tenv.t -> SourceFile.t -> Procdesc.t -> context
 
 val mk_label : unit -> Label.t
 (** Creates a new fresh label *)
+
+val find_or_add : context -> [< DefiningName.t] -> Label.t
+(** Find the label for the given defining name. If it does not exists, add a new one
+ * to the context and return it *)
 
 type jump_kind = Next | Label of Label.t | Exit
 
