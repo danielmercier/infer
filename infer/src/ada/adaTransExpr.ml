@@ -35,13 +35,13 @@ let rec mk_not exp =
 
 let trans_dest ctx dest =
   let rec aux = function
-    | #Identifier.t as id ->
+    | (#Identifier.t | #DottedName.t) as name ->
         let ref =
-          match AdaNode.p_xref id with
+          match AdaNode.p_xref name with
           | Some name ->
               name
           | None ->
-              L.die InternalError "Cannot generate a name for %s" (AdaNode.short_image id)
+              L.die InternalError "Cannot generate a name for %s" (AdaNode.short_image name)
         in
         let var_name = unique_defining_name ref in
         let pvar =
@@ -341,8 +341,8 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
         trans_call ctx cont ident call_ref []
     | _ ->
         unimplemented "trans_expr for an identifier call %s" (AdaNode.short_image ident) )
-  | #Identifier.t as ident ->
-      let stmts, dest = trans_dest ctx ident in
+  | (#Identifier.t | #DottedName.t) as name ->
+      let stmts, dest = trans_dest ctx name in
       let id = Ident.(create_fresh knormal) in
       let load = Sil.Load (id, dest, typ, loc) in
       return ctx cont expr [] (of_exp (stmts @ [load]) (Exp.Var id))
