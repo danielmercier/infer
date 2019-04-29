@@ -153,8 +153,8 @@ let type_of_expr ctx expr =
  *    - Goto: creates true and false branches with the expression
  *       pruned to true/false.
  *    - Tmp/Inline: simply return the given stmts/instructions and expression *)
-let return : type a.
-    context -> a continuation -> [< AdaNode.t] -> stmt list -> expr -> stmt list * a =
+let return : type a. context -> a continuation -> [< Expr.t] -> stmt list -> expr -> stmt list * a
+    =
  fun ctx cont orig_node stmts expr ->
   match cont with
   | Goto (jump_true, jump_false) ->
@@ -325,6 +325,29 @@ and trans_call : type a.
       return ctx cont call stmts (of_exp (instrs @ [sil_call]) (Exp.Var id))
   | _ ->
       unimplemented "trans_call for %s" (AdaNode.short_image call_ref)
+
+
+and trans_bounds ctx bounds_expr =
+  match bounds_expr with
+  | #Expr.t as expr -> (
+    match (expr : [< Expr.t]) with
+    | ( `BinOp {f_op= (lazy (`OpDoubleDot _)); f_left= (lazy left); f_right= (lazy right)}
+      | `RelationOp {f_op= (lazy (`OpDoubleDot _)); f_left= (lazy left); f_right= (lazy right)} )
+      as double_dot ->
+        let low_bound_stmts, (low_bound_instrs, low_bound) =
+          trans_expr_ ctx (Tmp "") (left :> Expr.t)
+        in
+        let high_bound_stmts, (high_bound_instrs, high_bound) =
+          trans_expr_ ctx (Tmp "") (right :> Expr.t)
+        in
+        ( low_bound_stmts @ high_bound_stmts
+        , low_bound_instrs @ high_bound_instrs
+        , low_bound
+        , high_bound )
+    | _ ->
+        unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr) )
+  | #DiscreteSubtypeIndication.t ->
+      unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr)
 
 
 and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =

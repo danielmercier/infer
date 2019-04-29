@@ -40,13 +40,22 @@ type jump_kind = Next | Label of Label.t | Exit
 (** We use this intermediate representation for the control flow.
  * Afterwards, this is translated to infer's control flow which is represented
  * imperatively in the Procdesc. *)
-type stmt = Block of block | Label of Label.t | Jump of jump_kind | Split of stmt list list
+type stmt =
+  | Block of block
+  | Label of Label.t
+  | Jump of jump_kind
+  | Split of stmt list list
+  | LoopStmt of Location.t * stmt list * Label.t
 
 and block = {instrs: Sil.instr list; loc: Location.t; nodekind: Procdesc.Node.nodekind}
 
 val location : SourceFile.t -> [< AdaNode.t] -> Location.t
 (** Create a location from the given AdaNode. Since the location contains only
  * one source location, we use the start location of the given AdaNode *)
+
+val end_location : SourceFile.t -> [< AdaNode.t] -> Location.t
+(** Create a location from the given AdaNode. Since the location contains only
+ * one source location, we use the end location of the given AdaNode *)
 
 val map_params :
      f:(   DefiningName.t

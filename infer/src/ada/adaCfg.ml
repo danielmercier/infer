@@ -6,10 +6,8 @@
  *)
 
 open! IStd
-open Libadalang
 open AdaFrontend
 module L = Logging
-module F = Format
 
 (* This type is used within this module only.
  * This is used to implement backward references of labels.
@@ -94,7 +92,16 @@ let trans_cfg ctx stmts =
           let next_nodes = trans_stmts following_nodes stmts |> register_node in
           Nodes
             ( List.map ~f:(trans_stmts next_nodes) blocks
-            |> List.map ~f:register_node |> List.concat ) )
+            |> List.map ~f:register_node |> List.concat )
+      | LoopStmt (loc, body_stmts, end_label) ->
+          let new_node =
+            Procdesc.create_node ctx.proc_desc loc (Procdesc.Node.Skip_node "LoopStmt") []
+          in
+          let nodes_after_loop = trans_stmts following_nodes stmts |> register_node in
+          register_label end_label nodes_after_loop ;
+          let next_nodes = trans_stmts [new_node] body_stmts |> register_node in
+          Procdesc.node_set_succs_exn ctx.proc_desc new_node next_nodes [] ;
+          Nodes [new_node] )
     | [] ->
         Nodes following_nodes
   in

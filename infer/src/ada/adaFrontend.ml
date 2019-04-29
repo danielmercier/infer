@@ -60,13 +60,23 @@ type jump_kind = Next | Label of Label.t | Exit
 (** We use this intermediate representation for the control flow.
  * Afterwards, this is translated to infer's control flow which is represented
  * imperatively in the Procdesc. *)
-type stmt = Block of block | Label of Label.t | Jump of jump_kind | Split of stmt list list
+type stmt =
+  | Block of block
+  | Label of Label.t
+  | Jump of jump_kind
+  | Split of stmt list list
+  | LoopStmt of Location.t * stmt list * Label.t
 
 and block = {instrs: Sil.instr list; loc: Location.t; nodekind: Procdesc.Node.nodekind}
 
 let location source_file node =
   let sloc_range = AdaNode.sloc_range node in
   Location.{line= sloc_range.loc_start.line; col= sloc_range.loc_start.column; file= source_file}
+
+
+let end_location source_file node =
+  let sloc_range = AdaNode.sloc_range node in
+  Location.{line= sloc_range.loc_end.line; col= sloc_range.loc_end.column; file= source_file}
 
 
 let map_params ~f params =
@@ -142,7 +152,9 @@ let rec pp_stmt fmt stmt =
       F.fprintf fmt "@[Goto Exit@]"
   | Split stmts_list ->
       let pp_sep fmt () = F.fprintf fmt "@]@ @[<v 2>} {@ " in
-      F.(fprintf fmt "@[<v>@[<v 2>Split {@ %a@]@ }@]" (pp_print_list ~pp_sep pp) stmts_list)
+      F.fprintf fmt "@[<v>@[<v 2>Split {@ %a@]@ }@]" (F.pp_print_list ~pp_sep pp) stmts_list
+  | LoopStmt (_, stmts, label) ->
+      F.fprintf fmt "@[<v>@[<v 2>LoopStmt {@ %a@]@ } end: %a@]" pp stmts Label.pp label
 
 
 and pp fmt stmts = Format.fprintf fmt "@[<v>%a@]" (Format.pp_print_list pp_stmt) stmts

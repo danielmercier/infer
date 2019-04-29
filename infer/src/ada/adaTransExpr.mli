@@ -69,4 +69,7 @@ val map_to_stmts :
 val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a
 (** Translate an expression to an intermediate representation. *)
 
+val trans_bounds :
+  context -> [< Expr.t | DiscreteSubtypeIndication.t] -> stmt list * Sil.instr list * Exp.t * Exp.t
+
 val type_of_expr : context -> [< Expr.t] -> Typ.t
