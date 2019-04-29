@@ -86,4 +86,7 @@ val sort_params : Procdesc.t -> ParamActual.t list -> Expr.t list
 (** Given a param to actual mapping list, return the actuals in the order of
  * the procedure description *)
 
+val is_access : Identifier.t -> bool
+(** Return true if the identifier is refering to 'Access *)
+
 val pp : Format.formatter -> stmt list -> unit

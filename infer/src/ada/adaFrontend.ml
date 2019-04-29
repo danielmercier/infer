@@ -142,6 +142,8 @@ let sort_params _ param_actuals =
   List.map ~f:(fun {ParamActual.actual} -> actual) param_actuals
 
 
+let is_access attribute = String.equal (String.lowercase (AdaNode.text attribute)) "access"
+
 let rec pp_stmt fmt stmt =
   match stmt with
   | Block {instrs} ->

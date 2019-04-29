@@ -18,10 +18,16 @@ let trans_type_decl tenv type_decl =
         aux typ
     | None -> (
       match (type_decl :> BaseTypeDecl.t) with
-      | `TypeDecl {f_type_def= (lazy (`SignedIntTypeDef _))} ->
+      | `TypeDecl {f_type_def= (lazy #SignedIntTypeDef.t)} ->
           Typ.(mk (Tint IInt))
       | `TypeDecl {f_name= (lazy (Some name))} when String.equal (AdaNode.text name) "Boolean" ->
           Typ.(mk (Tint IBool))
+      | `TypeDecl {f_type_def= (lazy (`TypeAccessDef {f_subtype_indication= (lazy subtype)}))} -> (
+        match SubtypeIndication.f_name subtype |> Name.p_referenced_decl with
+        | Some (#BaseTypeDecl.t as base_type) ->
+            Typ.(mk (Tptr (aux base_type, Pk_pointer)))
+        | _ ->
+            L.die InternalError "Cannot generate a type for %s" (AdaNode.short_image type_decl) )
       | `SubtypeDecl {f_subtype= (lazy subtype)} -> (
           let name = SubtypeIndication.f_name subtype in
           match AdaNode.p_xref name >>= DefiningName.p_basic_decl with

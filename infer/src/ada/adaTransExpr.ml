@@ -33,6 +33,15 @@ let rec mk_not exp =
       UnOp (Unop.LNot, exp, Some Typ.(mk (Tint IBool)))
 
 
+let type_of_expr ctx expr =
+  match Expr.p_expression_type expr with
+  | Some typ ->
+      trans_type_decl ctx.tenv typ
+  | None ->
+      (* No type. We concider that the expression have the type void *)
+      Typ.void
+
+
 let trans_dest ctx dest =
   let rec aux = function
     | (#Identifier.t | #DottedName.t) as name ->
@@ -52,6 +61,13 @@ let trans_dest ctx dest =
               Pvar.mk_global var_name
         in
         ([], Exp.Lvar pvar)
+    | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
+        let instrs, dest_expr = aux prefix in
+        let id = Ident.(create_fresh knormal) in
+        let load =
+          Sil.Load (id, dest_expr, type_of_expr ctx prefix, location ctx.source_file dest)
+        in
+        (instrs @ [load], Exp.Var id)
     | _ as expr ->
         unimplemented "trans_dest for %s" (AdaNode.short_image expr)
   in
@@ -138,15 +154,6 @@ let rec map_to_stmts ~f ~orig_node ctx expr_result =
         [Split (loc, [prune_true_stmt :: then_b; prune_false_stmt :: else_b])]
   in
   aux expr_result
-
-
-let type_of_expr ctx expr =
-  match Expr.p_expression_type expr with
-  | Some typ ->
-      trans_type_decl ctx.tenv typ
-  | None ->
-      (* No type. We concider that the expression have the type void *)
-      Typ.void
 
 
 (** Depending on the wanted continuation, returns a structured result.
@@ -369,6 +376,11 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
       let id = Ident.(create_fresh knormal) in
       let load = Sil.Load (id, dest, typ, loc) in
       return ctx cont expr [] (of_exp (stmts @ [load]) (Exp.Var id))
+  | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
+  | `UpdateAttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
+    when is_access attribute ->
+      let dest_instrs, dest = trans_dest ctx prefix in
+      return ctx cont expr [] (of_exp dest_instrs dest)
   | #BinOp.t as binop -> (
       let lhs = BinOp.f_left binop in
       let op = BinOp.f_op binop in
