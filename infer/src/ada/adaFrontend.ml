@@ -136,6 +136,12 @@ let get_defining_name_proc name =
   AdaNode.parent name >>= aux
 
 
+let sort_params _ param_actuals =
+  (* TODO: This should sort the params but for now there is an issue in
+   * Libadalang with the type of ParamActual *)
+  List.map ~f:(fun {ParamActual.actual} -> actual) param_actuals
+
+
 let rec pp_stmt fmt stmt =
   match stmt with
   | Block {instrs} ->

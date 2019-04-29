@@ -375,9 +375,17 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
       let rhs = BinOp.f_right binop in
       match Name.p_referenced_decl op with
       | Some ref ->
-          trans_call ctx cont binop ref [lhs; rhs]
+          trans_call ctx cont binop ref ([lhs; rhs] :> Expr.t list)
       | None ->
           trans_binop ctx cont binop )
+  | `CallExpr {f_name= (lazy name); f_suffix= (lazy (#AssocList.t as assoc_list))} as call_expr
+    when Name.p_is_call call_expr -> (
+      let sorted_params = AssocList.p_zip_with_params assoc_list |> sort_params ctx.proc_desc in
+      match Name.p_referenced_decl name with
+      | Some ref ->
+          trans_call ctx cont expr ref sorted_params
+      | None ->
+          L.die InternalError "Unknown call to %s" (AdaNode.short_image name) )
   | `ParenExpr {f_expr= (lazy expr)} ->
       trans_expr_ ctx cont (expr :> Expr.t)
   | _ as expr ->
