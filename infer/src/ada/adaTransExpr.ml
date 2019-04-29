@@ -135,7 +135,7 @@ let rec map_to_stmts ~f ~orig_node ctx expr_result =
         in
         let then_b = aux true_b in
         let else_b = aux false_b in
-        [Split [prune_true_stmt :: then_b; prune_false_stmt :: else_b]]
+        [Split (loc, [prune_true_stmt :: then_b; prune_false_stmt :: else_b])]
   in
   aux expr_result
 
@@ -156,6 +156,7 @@ let type_of_expr ctx expr =
 let return : type a. context -> a continuation -> [< Expr.t] -> stmt list -> expr -> stmt list * a
     =
  fun ctx cont orig_node stmts expr ->
+  let loc = location ctx.source_file orig_node in
   match cont with
   | Goto (jump_true, jump_false) ->
       let rec f = function
@@ -164,7 +165,7 @@ let return : type a. context -> a continuation -> [< Expr.t] -> stmt list -> exp
            * expression is true, and false in the other branch *)
             map_to_stmts ~f ~orig_node ctx (If (instrs, exp, (of_bool true, of_bool false)))
         | Bool b ->
-            [Jump (if b then jump_true else jump_false)]
+            [Jump (loc, if b then jump_true else jump_false)]
       in
       (stmts @ map_to_stmts ~f ~orig_node ctx expr, ())
   | Tmp name -> (
@@ -174,7 +175,6 @@ let return : type a. context -> a continuation -> [< Expr.t] -> stmt list -> exp
         (stmts, to_exp simple_expr)
     | _ ->
         let typ = type_of_expr ctx orig_node in
-        let loc = location ctx.source_file orig_node in
         let tmp_var = Pvar.mk_tmp name (Procdesc.get_proc_name ctx.proc_desc) in
         let rec f simple_expr =
           let instrs, exp = to_exp simple_expr in

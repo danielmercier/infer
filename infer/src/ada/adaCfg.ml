@@ -30,7 +30,7 @@ let trans_cfg ctx stmts =
    * whenever we cannot directly set the successors of a node because of a
    * backward reference to a label, we add the node to this table *)
   let node_table = Caml.Hashtbl.create (List.length stmts) in
-  let register_node = function
+  let register_node loc = function
     (* Whenever we need a node and Unknown is returned, we can call this. This
      * function creates a new node and add it to the node table so that it's
      * successors can be registered later. *)
@@ -38,8 +38,7 @@ let trans_cfg ctx stmts =
         nodes
     | Unknown label ->
         let new_node =
-          Procdesc.create_node ctx.proc_desc (Procdesc.get_loc ctx.proc_desc)
-            (Procdesc.Node.Skip_node "Label") []
+          Procdesc.create_node ctx.proc_desc loc (Procdesc.Node.Skip_node "Label") []
         in
         Caml.Hashtbl.add node_table new_node label ;
         [new_node]
@@ -66,12 +65,12 @@ let trans_cfg ctx stmts =
                * Register new_node so successors will be set later *)
               Caml.Hashtbl.add node_table new_node label ) ;
           Nodes [new_node]
-      | Label label ->
+      | Label (loc, label) ->
           (* We do not create a node for a label, we simply register it to
            * point to the nodes for the following stmt *)
-          let next_nodes = trans_stmts following_nodes stmts |> register_node in
+          let next_nodes = trans_stmts following_nodes stmts |> register_node loc in
           register_label label next_nodes ; Nodes next_nodes
-      | Jump jump_kind -> (
+      | Jump (_, jump_kind) -> (
           (* We do not create a node for a jump, thus the returned node depends
            * on where we jump to *)
           let next_nodes = trans_stmts following_nodes stmts in
@@ -86,26 +85,29 @@ let trans_cfg ctx stmts =
                 Unknown label )
           | Exit ->
               Nodes [procedure_exit_node] )
-      | Split blocks ->
+      | Split (loc, blocks) ->
           (* We do not create a node for a split. The nodes returned are
            * the nodes returned by all the branches of the split *)
-          let next_nodes = trans_stmts following_nodes stmts |> register_node in
+          let next_nodes = trans_stmts following_nodes stmts |> register_node loc in
           Nodes
             ( List.map ~f:(trans_stmts next_nodes) blocks
-            |> List.map ~f:register_node |> List.concat )
+            |> List.map ~f:(register_node loc)
+            |> List.concat )
       | LoopStmt (loc, body_stmts, end_label) ->
           let new_node =
             Procdesc.create_node ctx.proc_desc loc (Procdesc.Node.Skip_node "LoopStmt") []
           in
-          let nodes_after_loop = trans_stmts following_nodes stmts |> register_node in
+          let nodes_after_loop = trans_stmts following_nodes stmts |> register_node loc in
           register_label end_label nodes_after_loop ;
-          let next_nodes = trans_stmts [new_node] body_stmts |> register_node in
+          let next_nodes = trans_stmts [new_node] body_stmts |> register_node loc in
           Procdesc.node_set_succs_exn ctx.proc_desc new_node next_nodes [] ;
           Nodes [new_node] )
     | [] ->
         Nodes following_nodes
   in
-  let next_nodes = trans_stmts [procedure_exit_node] stmts |> register_node in
+  let next_nodes =
+    trans_stmts [procedure_exit_node] stmts |> register_node (Procdesc.get_loc ctx.proc_desc)
+  in
   let set_succs node label =
     match Hashtbl.find label_map label with
     | Some nodes ->

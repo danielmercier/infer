@@ -41,7 +41,7 @@ let trans_simple_stmt ctx simple_stmt =
       let stmts, result = trans_expr ctx Inline expr in
       stmts @ map_to_stmts ~f ~orig_node:simple_stmt ctx result
   | `ReturnStmt {f_return_expr= (lazy None)} ->
-      [Jump Exit]
+      [Jump (loc, Exit)]
   | `NullStmt _ ->
       []
   | `CallStmt {f_call= (lazy call)} ->
@@ -69,23 +69,24 @@ let trans_simple_stmt ctx simple_stmt =
           let stmts, () = trans_expr ctx (Goto (Label label, Next)) expr in
           stmts
       | None ->
-          [Jump (Label label)] )
+          [Jump (loc, Label label)] )
   | `Label {f_decl= (lazy (`LabelDecl {f_name= (lazy name)}))} ->
-      [Label (find_or_add ctx name)]
+      [Label (loc, find_or_add ctx name)]
   | `GotoStmt {f_label_name= (lazy name)} ->
       let name_ref = Option.value_exn (AdaNode.p_xref name) in
-      [Jump (Label (find_or_add ctx name_ref))]
+      [Jump (loc, Label (find_or_add ctx name_ref))]
   | _ ->
       unimplemented "trans_simple_stmt for %s" (AdaNode.short_image simple_stmt)
 
 
 let rec trans_if_stmt ctx orig_stmt cond_expr then_stmts else_stmts =
+  let loc = location ctx.source_file orig_stmt in
   let false_label = mk_label () in
   let end_label = mk_label () in
   let stmts_expr, () = trans_expr ctx (Goto (Next, Label false_label)) cond_expr in
-  let true_block = then_stmts @ [Jump (Label end_label)] in
-  let false_block = Label false_label :: else_stmts in
-  stmts_expr @ true_block @ false_block @ [Label end_label]
+  let true_block = then_stmts @ [Jump (loc, Label end_label)] in
+  let false_block = Label (loc, false_label) :: else_stmts in
+  stmts_expr @ true_block @ false_block @ [Label (loc, end_label)]
 
 
 and trans_composite_stmt ctx composite_stmt =
@@ -177,8 +178,9 @@ and trans_composite_stmt ctx composite_stmt =
               ( loc
               , bounds_stmts
                 @ [ Split
-                      [ [prune_true_block] @ loop_stmts @ [in_loop_assignment]
-                      ; [prune_false_block] @ [Jump (Label end_loop)] ] ]
+                      ( loc
+                      , [ [prune_true_block] @ loop_stmts @ [in_loop_assignment]
+                        ; [prune_false_block] @ [Jump (loc, Label end_loop)] ] ) ]
               , end_loop ) ]
       | Some (`ForLoopSpec {f_loop_type= (lazy (`IterTypeOf _))}) ->
           unimplemented "for X of ..."

@@ -42,9 +42,9 @@ type jump_kind = Next | Label of Label.t | Exit
  * imperatively in the Procdesc. *)
 type stmt =
   | Block of block
-  | Label of Label.t
-  | Jump of jump_kind
-  | Split of stmt list list
+  | Label of Location.t * Label.t
+  | Jump of Location.t * jump_kind
+  | Split of Location.t * stmt list list
   | LoopStmt of Location.t * stmt list * Label.t
 
 and block = {instrs: Sil.instr list; loc: Location.t; nodekind: Procdesc.Node.nodekind}

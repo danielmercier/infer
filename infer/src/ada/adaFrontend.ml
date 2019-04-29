@@ -62,9 +62,9 @@ type jump_kind = Next | Label of Label.t | Exit
  * imperatively in the Procdesc. *)
 type stmt =
   | Block of block
-  | Label of Label.t
-  | Jump of jump_kind
-  | Split of stmt list list
+  | Label of Location.t * Label.t
+  | Jump of Location.t * jump_kind
+  | Split of Location.t * stmt list list
   | LoopStmt of Location.t * stmt list * Label.t
 
 and block = {instrs: Sil.instr list; loc: Location.t; nodekind: Procdesc.Node.nodekind}
@@ -142,15 +142,15 @@ let rec pp_stmt fmt stmt =
       F.fprintf fmt "@[<v>@[<v 2>Block {@ %a@]@ }@]"
         (F.pp_print_list (Sil.pp_instr ~print_types:true Pp.text))
         instrs
-  | Label label ->
+  | Label (_, label) ->
       F.fprintf fmt "@[%a:@]" Label.pp label
-  | Jump Next ->
+  | Jump (_, Next) ->
       F.fprintf fmt "@[Goto Next@]"
-  | Jump (Label label) ->
+  | Jump (_, Label label) ->
       F.fprintf fmt "@[Goto @[%a@]@]" Label.pp label
-  | Jump Exit ->
+  | Jump (_, Exit) ->
       F.fprintf fmt "@[Goto Exit@]"
-  | Split stmts_list ->
+  | Split (_, stmts_list) ->
       let pp_sep fmt () = F.fprintf fmt "@]@ @[<v 2>} {@ " in
       F.fprintf fmt "@[<v>@[<v 2>Split {@ %a@]@ }@]" (F.pp_print_list ~pp_sep pp) stmts_list
   | LoopStmt (_, stmts, label) ->
