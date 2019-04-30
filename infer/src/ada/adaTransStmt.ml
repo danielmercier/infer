@@ -51,7 +51,9 @@ let trans_simple_stmt ctx simple_stmt =
       let label =
         match loop_name_opt with
         | Some loop_name -> (
-          match AdaNode.p_xref loop_name >>= fun ref -> LoopMap.find_opt ref ctx.loop_map with
+          match
+            AdaNode.p_xref loop_name >>= fun ref -> DefiningNameMap.find_opt ref ctx.loop_map
+          with
           | Some label ->
               label
           | None ->
@@ -97,7 +99,9 @@ and trans_composite_stmt ctx composite_stmt =
       let new_ctx =
         match BaseLoopStmt.f_end_name loop_stmt >>= AdaNode.p_xref with
         | Some node ->
-            {ctx with loop_map= LoopMap.add node end_loop ctx.loop_map; current_loop= Some end_loop}
+            { ctx with
+              loop_map= DefiningNameMap.add node end_loop ctx.loop_map
+            ; current_loop= Some end_loop }
         | None ->
             {ctx with current_loop= Some end_loop}
       in
@@ -130,8 +134,7 @@ and trans_composite_stmt ctx composite_stmt =
                 type_of_expr ctx name
           in
           let has_reverse = ReverseNode.p_as_bool has_reverse_node in
-          let loop_var_name = unique_defining_name var_id in
-          let loop_var = Pvar.mk loop_var_name (Procdesc.get_proc_name ctx.proc_desc) in
+          let loop_var = pvar ctx var_id in
           let id = Ident.(create_fresh knormal) in
           let load_loop_var = Sil.Load (id, Exp.Lvar loop_var, typ, loc) in
           let bounds_stmts, bounds_instrs, low_bound, high_bound = trans_bounds ctx iter_expr in
@@ -218,6 +221,19 @@ and trans_composite_stmt ctx composite_stmt =
             []
       in
       decl_stmts @ stmts
+  | `ExtendedReturnStmt {f_decl= (lazy decl); f_stmts= (lazy handled_stmts)} ->
+      let return_var = Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc) in
+      let f acc name = {acc with subst= DefiningNameMap.add name return_var acc.subst} in
+      let new_ctx =
+        ExtendedReturnStmtObjectDecl.f_ids decl
+        |> DefiningNameList.f_list |> List.fold_left ~f ~init:ctx
+      in
+      let decl_stmts = trans_decl new_ctx (decl :> AdaNode.t) in
+      let stmts =
+        handled_stmts >>| HandledStmts.f_stmts >>| trans_stmts new_ctx |> Option.value ~default:[]
+      in
+      let end_stmt_loc = end_location ctx.source_file composite_stmt in
+      decl_stmts @ stmts @ [Jump (end_stmt_loc, Exit)]
   | _ ->
       unimplemented "trans_composite_stmt for %s" (AdaNode.short_image composite_stmt)
 
@@ -243,31 +259,36 @@ and trans_stmt ctx stmt =
       unimplemented "trans_stmt for %s" (AdaNode.short_image stmt)
 
 
-and trans_decls ctx declarative_part =
-  let trans_decl decl =
-    match decl with
-    | `ObjectDecl
-        { ObjectDeclType.f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
-        ; f_type_expr= (lazy type_expr)
-        ; f_default_expr= (lazy (Some default_expr)) } ->
-        let typ = trans_type_expr ctx.tenv type_expr in
-        let loc = location ctx.source_file decl in
-        let assign_ids simple_expr =
-          let instrs, expr = to_exp simple_expr in
-          let f id =
-            let name = unique_defining_name id in
-            let pvar = Pvar.mk name (Procdesc.get_proc_name ctx.proc_desc) in
-            Sil.Store (Lvar pvar, typ, expr, loc)
-          in
-          [ Block
-              { instrs= instrs @ List.map ~f names
-              ; loc
-              ; nodekind= Procdesc.Node.(Stmt_node DeclStmt) } ]
+and trans_decl ctx decl =
+  match (decl :> AdaNode.t) with
+  | `ObjectDecl
+      { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
+      ; f_type_expr= (lazy type_expr)
+      ; f_default_expr= (lazy (Some default_expr)) }
+  | `ExtendedReturnStmtObjectDecl
+      { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
+      ; f_type_expr= (lazy type_expr)
+      ; f_default_expr= (lazy (Some default_expr)) } ->
+      let typ = trans_type_expr ctx.tenv type_expr in
+      let loc = location ctx.source_file decl in
+      let assign_ids simple_expr =
+        let instrs, expr = to_exp simple_expr in
+        let f id =
+          let pvar = pvar ctx id in
+          Sil.Store (Lvar pvar, typ, expr, loc)
         in
-        let stmts, expr = trans_expr ctx Inline default_expr in
-        stmts @ map_to_stmts ~f:assign_ids ~orig_node:declarative_part ctx expr
-    | _ ->
-        []
-  in
+        [ Block
+            {instrs= instrs @ List.map ~f names; loc; nodekind= Procdesc.Node.(Stmt_node DeclStmt)}
+        ]
+      in
+      let stmts, expr = trans_expr ctx Inline default_expr in
+      stmts @ map_to_stmts ~f:assign_ids ~orig_node:decl ctx expr
+  | _ ->
+      []
+
+
+and trans_decls ctx declarative_part =
   DeclarativePart.f_decls declarative_part
-  |> AdaNodeList.f_list |> List.map ~f:trans_decl |> List.concat
+  |> AdaNodeList.f_list
+  |> List.map ~f:(trans_decl ctx)
+  |> List.concat

@@ -12,7 +12,7 @@ val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
 
 module Label = Int
 
-module LoopMap : Caml.Map.S with type key = DefiningName.t
+module DefiningNameMap : Caml.Map.S with type key = DefiningName.t
 
 module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
 
@@ -22,8 +22,9 @@ type context =
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
   ; label_table: Label.t DefiningNameTable.t
-  ; loop_map: Label.t LoopMap.t
-  ; current_loop: Label.t option }
+  ; loop_map: Label.t DefiningNameMap.t
+  ; current_loop: Label.t option
+  ; subst: Pvar.t DefiningNameMap.t }
 
 val mk_context : Cfg.t -> Tenv.t -> SourceFile.t -> Procdesc.t -> context
 (** Creates a new context with given arguments *)
@@ -74,6 +75,11 @@ val unique_type_name : [< TypeExpr.t] -> string
 
 val unique_defining_name : [< DefiningName.t] -> Mangled.t
 (** Given a defining name, return a string that identifies uniquely the name *)
+
+val pvar : context -> [< AdaNode.t] -> Pvar.t
+(** Given any AdaNode, calling p_xref, try to make a program variable of it.
+ * Also use the substitute map in the context to use a particular program variable
+ * if required *)
 
 val get_proc_name : [< BaseSubpBody.t] -> Typ.Procname.t
 (** Return a Typ.Procname.t from a supbrogram body *)

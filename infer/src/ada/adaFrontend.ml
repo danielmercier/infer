@@ -16,7 +16,7 @@ let unimplemented fmt =
 
 
 module Label = Int
-module LoopMap = Caml.Map.Make (DefiningName)
+module DefiningNameMap = Caml.Map.Make (DefiningName)
 module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
 
 type context =
@@ -25,8 +25,9 @@ type context =
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
   ; label_table: Label.t DefiningNameTable.t
-  ; loop_map: Label.t LoopMap.t
-  ; current_loop: Label.t option }
+  ; loop_map: Label.t DefiningNameMap.t
+  ; current_loop: Label.t option
+  ; subst: Pvar.t DefiningNameMap.t }
 
 let mk_context cfg tenv source_file proc_desc =
   { cfg
@@ -34,8 +35,9 @@ let mk_context cfg tenv source_file proc_desc =
   ; source_file
   ; proc_desc
   ; label_table= DefiningNameTable.create 24
-  ; loop_map= LoopMap.empty
-  ; current_loop= None }
+  ; loop_map= DefiningNameMap.empty
+  ; current_loop= None
+  ; subst= DefiningNameMap.empty }
 
 
 let mk_label =
@@ -134,6 +136,31 @@ let get_defining_name_proc name =
         AdaNode.parent node >>= aux
   in
   AdaNode.parent name >>= aux
+
+
+let pvar ctx node =
+  let pvar_for_name name =
+    match DefiningNameMap.find_opt name ctx.subst with
+    | Some pvar ->
+        pvar
+    | None -> (
+        let pvar_name = unique_defining_name name in
+        match get_defining_name_proc name with
+        | Some proc_name ->
+            Pvar.mk pvar_name proc_name
+        | None ->
+            Pvar.mk_global pvar_name )
+  in
+  match (node :> AdaNode.t) with
+  | #DefiningName.t as name ->
+      pvar_for_name name
+  | _ -> (
+    match AdaNode.p_xref node with
+    | Some name ->
+        pvar_for_name name
+    | None ->
+        L.die InternalError "Cannot generate a program variable for node %s"
+          (AdaNode.short_image node) )
 
 
 let sort_params _ param_actuals =

@@ -45,22 +45,7 @@ let type_of_expr ctx expr =
 let trans_dest ctx dest =
   let rec aux = function
     | (#Identifier.t | #DottedName.t) as name ->
-        let ref =
-          match AdaNode.p_xref name with
-          | Some name ->
-              name
-          | None ->
-              L.die InternalError "Cannot generate a name for %s" (AdaNode.short_image name)
-        in
-        let var_name = unique_defining_name ref in
-        let pvar =
-          match get_defining_name_proc ref with
-          | Some proc_name ->
-              Pvar.mk var_name proc_name
-          | None ->
-              Pvar.mk_global var_name
-        in
-        ([], Exp.Lvar pvar)
+        ([], Exp.Lvar (pvar ctx name))
     | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
         let instrs, dest_expr = aux prefix in
         let id = Ident.(create_fresh knormal) in
