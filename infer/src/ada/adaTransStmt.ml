@@ -207,6 +207,17 @@ and trans_composite_stmt ctx composite_stmt =
       in
       let trans_then_stmts = trans_stmts ctx then_stmts in
       trans_if_stmt ctx (composite_stmt :> AdaNode.t) cond_expr trans_then_stmts (aux alternatives)
+  | (`BeginBlock {f_stmts= (lazy handled_stmts)} | `DeclBlock {f_stmts= (lazy handled_stmts)}) as
+    block_stmt ->
+      let stmts = trans_stmts ctx (HandledStmts.f_stmts handled_stmts) in
+      let decl_stmts =
+        match block_stmt with
+        | `DeclBlock {f_decls= (lazy decl_part)} ->
+            trans_decls ctx decl_part
+        | `BeginBlock _ ->
+            []
+      in
+      decl_stmts @ stmts
   | _ ->
       unimplemented "trans_composite_stmt for %s" (AdaNode.short_image composite_stmt)
 
@@ -230,3 +241,33 @@ and trans_stmt ctx stmt =
       trans_composite_stmt ctx composite_stmt
   | _ as stmt ->
       unimplemented "trans_stmt for %s" (AdaNode.short_image stmt)
+
+
+and trans_decls ctx declarative_part =
+  let trans_decl decl =
+    match decl with
+    | `ObjectDecl
+        { ObjectDeclType.f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
+        ; f_type_expr= (lazy type_expr)
+        ; f_default_expr= (lazy (Some default_expr)) } ->
+        let typ = trans_type_expr ctx.tenv type_expr in
+        let loc = location ctx.source_file decl in
+        let assign_ids simple_expr =
+          let instrs, expr = to_exp simple_expr in
+          let f id =
+            let name = unique_defining_name id in
+            let pvar = Pvar.mk name (Procdesc.get_proc_name ctx.proc_desc) in
+            Sil.Store (Lvar pvar, typ, expr, loc)
+          in
+          [ Block
+              { instrs= instrs @ List.map ~f names
+              ; loc
+              ; nodekind= Procdesc.Node.(Stmt_node DeclStmt) } ]
+        in
+        let stmts, expr = trans_expr ctx Inline default_expr in
+        stmts @ map_to_stmts ~f:assign_ids ~orig_node:declarative_part ctx expr
+    | _ ->
+        []
+  in
+  DeclarativePart.f_decls declarative_part
+  |> AdaNodeList.f_list |> List.map ~f:trans_decl |> List.concat

@@ -12,3 +12,6 @@ open AdaFrontend
 val trans_stmts : context -> StmtList.t -> stmt list
 (** translate a list of libadalang statements to a list of the intermediate CFG
  * representation *)
+
+val trans_decls : context -> DeclarativePart.t -> stmt list
+(** translate the given declaration part to a list of statements *)

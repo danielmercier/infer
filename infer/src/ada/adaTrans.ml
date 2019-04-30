@@ -37,14 +37,15 @@ let trans_spec cfg tenv source_file subp_body =
 
 
 let trans_subp_body ctx subp =
-  let stmts = SubpBody.f_stmts subp |> HandledStmts.f_stmts |> trans_stmts ctx in
+  let decl_stmts = SubpBody.f_decls subp |> trans_decls ctx in
+  let handled_stmts = SubpBody.f_stmts subp |> HandledStmts.f_stmts |> trans_stmts ctx in
   let start_loc = location ctx.source_file subp in
   let end_loc = end_location ctx.source_file subp in
   let start_node = Procdesc.create_node ctx.proc_desc start_loc Procdesc.Node.Start_node [] in
   let exit_node = Procdesc.create_node ctx.proc_desc end_loc Procdesc.Node.Exit_node [] in
   Procdesc.set_start_node ctx.proc_desc start_node ;
   Procdesc.set_exit_node ctx.proc_desc exit_node ;
-  trans_cfg ctx stmts
+  trans_cfg ctx (decl_stmts @ handled_stmts)
 
 
 let trans_subp cfg tenv source_file subp =
