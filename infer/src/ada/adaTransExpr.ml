@@ -183,22 +183,53 @@ let return : type a. context -> a continuation -> [< Expr.t] -> stmt list -> exp
       (stmts, expr)
 
 
+let combine ~f lhs_expr rhs_expr =
+  (* To combine two expressions lhs and rhs, we append the rhs expression to
+   * all the lhs leafs and we call f with the actual instructions and expressions *)
+  let aux lhs_simple_expr =
+    let lhs_instrs, lhs_exp = to_exp lhs_simple_expr in
+    let call_f rhs_simple_expr =
+      let rhs_instrs, rhs_exp = to_exp rhs_simple_expr in
+      of_exp (lhs_instrs @ rhs_instrs) (f lhs_exp rhs_exp)
+    in
+    map ~f:call_f rhs_expr
+  in
+  map ~f:aux lhs_expr
+
+
+let mk_or lhs_expr rhs_expr =
+  (* Make a shortcircuit or from the two given expressions *)
+  let f = function
+    | Bool true ->
+        of_bool true
+    | Bool false ->
+        rhs_expr
+    | Exp (instrs, exp) ->
+        If (instrs, exp, (of_bool true, rhs_expr))
+  in
+  map ~f lhs_expr
+
+
+let mk_and lhs_expr rhs_expr =
+  (* Make a shortcircuit and from the two given expressions *)
+  let f = function
+    | Bool false ->
+        of_bool false
+    | Bool true ->
+        rhs_expr
+    | Exp (instrs, exp) ->
+        If (instrs, exp, (rhs_expr, of_bool false))
+  in
+  map ~f lhs_expr
+
+
 let rec trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a =
  fun ctx cont binop ->
   let lhs = BinOp.f_left binop in
   let rhs = BinOp.f_right binop in
-  let simple_binop op lhs_expr_res rhs_expr_res =
-    (* To create a binop from lhs and rhs, we append the rhs expression to
-     * all the lhs leafs and we create the operation their *)
-    let aux lhs_simple_expr =
-      let lhs_instrs, lhs_exp = to_exp lhs_simple_expr in
-      let make_binop rhs_simple_expr =
-        let rhs_instrs, rhs_exp = to_exp rhs_simple_expr in
-        of_exp (lhs_instrs @ rhs_instrs) (Exp.BinOp (op, lhs_exp, rhs_exp))
-      in
-      map ~f:make_binop rhs_expr_res
-    in
-    map ~f:aux lhs_expr_res
+  let simple_binop op =
+    let f lhs_exp rhs_exp = Exp.BinOp (op, lhs_exp, rhs_exp) in
+    combine ~f
   in
   let lhs_stmts, lhs_expr_res = trans_expr_ ctx Inline (lhs :> Expr.t) in
   let rhs_stmts, rhs_expr_res = trans_expr_ ctx Inline (rhs :> Expr.t) in
@@ -207,29 +238,11 @@ let rec trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list 
     | `OpAnd _ ->
         simple_binop Binop.LAnd lhs_expr_res rhs_expr_res
     | `OpAndThen _ ->
-        let f_lhs = function
-          | Bool true ->
-              rhs_expr_res
-          | Bool false ->
-              of_bool false
-          | Exp (lhs_instrs, lhs_exp) ->
-              (* Only if lhs is true, we check for the rhs*)
-              If (lhs_instrs, lhs_exp, (rhs_expr_res, of_bool false))
-        in
-        map ~f:f_lhs lhs_expr_res
+        mk_and lhs_expr_res rhs_expr_res
     | `OpOr _ ->
         simple_binop Binop.LOr lhs_expr_res rhs_expr_res
     | `OpOrElse _ ->
-        let f_lhs = function
-          | Bool true ->
-              of_bool true
-          | Bool false ->
-              rhs_expr_res
-          | Exp (lhs_instrs, lhs_exp) ->
-              (* Only if lhs is false, we check for the rhs*)
-              If (lhs_instrs, lhs_exp, (of_bool true, rhs_expr_res))
-        in
-        map ~f:f_lhs lhs_expr_res
+        mk_or lhs_expr_res rhs_expr_res
     | `OpXor _ ->
         simple_binop Binop.BXor lhs_expr_res rhs_expr_res
     | `OpEq _ ->
