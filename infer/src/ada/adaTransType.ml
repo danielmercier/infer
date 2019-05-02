@@ -28,6 +28,9 @@ let trans_type_decl tenv type_decl =
             Typ.(mk (Tptr (aux base_type, Pk_pointer)))
         | _ ->
             L.die InternalError "Cannot generate a type for %s" (AdaNode.short_image type_decl) )
+      | `TypeDecl
+          {f_name= (lazy (Some name)); f_type_def= (lazy (#RecordTypeDef.t as record_type_def))} ->
+          Typ.mk (Typ.Tstruct (Typ.AdaRecord (unique_defining_name name)))
       | `SubtypeDecl {f_subtype= (lazy subtype)} -> (
           let name = SubtypeIndication.f_name subtype in
           match AdaNode.p_xref name >>= DefiningName.p_basic_decl with

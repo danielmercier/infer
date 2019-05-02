@@ -113,6 +113,7 @@ and name =
   | JavaClass of Mangled.t
   | ObjcClass of QualifiedCppName.t
   | ObjcProtocol of QualifiedCppName.t
+  | AdaRecord of Mangled.t
 [@@deriving compare]
 
 and template_arg = TType of t | TInt of Int64.t | TNull | TNullPtr | TOpaque [@@deriving compare]
@@ -675,6 +676,11 @@ module Fieldname : sig
     val is_outer_instance : t -> bool
     (** Check if the field is the synthetic this$n of a nested class, used to access the n-th outer
         instance. *)
+  end
+
+  module Ada : sig
+    val from_string : string -> t
+    (** Create a java field name from string *)
   end
 
   val to_string : t -> string

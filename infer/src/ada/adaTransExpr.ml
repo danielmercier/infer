@@ -50,9 +50,28 @@ let type_of_expr ctx expr =
       Typ.void
 
 
+let record_field name =
+  match Name.p_referenced_decl name with
+  | Some ((#ComponentDecl.t | #DiscriminantSpec.t) as field) ->
+      Some field
+  | _ ->
+      None
+
+
 let trans_dest ctx dest =
   let rec aux = function
-    | (#Identifier.t | #DottedName.t) as name ->
+    | `DottedName _ as name -> (
+      match record_field (DottedName.f_suffix name) with
+      | Some _ ->
+          let prefix_instrs, prefix_expr = aux (DottedName.f_prefix name) in
+          ( prefix_instrs
+          , Exp.Lfield
+              ( prefix_expr
+              , field_name (Option.value_exn (AdaNode.p_xref name))
+              , type_of_expr ctx name ) )
+      | None ->
+          ([], Exp.Lvar (pvar ctx name)) )
+    | `Identifier _ as name ->
         ([], Exp.Lvar (pvar ctx name))
     | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
         let instrs, dest_expr = aux prefix in
@@ -448,7 +467,7 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
         trans_call ctx cont ident call_ref []
     | _ ->
         unimplemented "trans_expr for an identifier call %s" (AdaNode.short_image ident) )
-  | (#Identifier.t | #DottedName.t) as name ->
+  | (#Identifier.t | #DottedName.t | #ExplicitDeref.t) as name ->
       let stmts, dest = trans_dest ctx name in
       let id = Ident.(create_fresh knormal) in
       let load = Sil.Load (id, dest, typ, loc) in

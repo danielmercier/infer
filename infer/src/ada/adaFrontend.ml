@@ -178,6 +178,8 @@ let pvar ctx node =
           (AdaNode.short_image node) )
 
 
+let field_name name = AdaNode.text (name :> DefiningName.t) |> Typ.Fieldname.Ada.from_string
+
 let sort_params _ param_actuals =
   (* TODO: This should sort the params but for now there is an issue in
    * Libadalang with the type of ParamActual *)

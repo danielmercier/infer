@@ -103,6 +103,10 @@ val get_defining_name_proc : [< DefiningName.t] -> Typ.Procname.t option
 (** Return the procedure that declares the given name. Return None if the name
  * is global. *)
 
+val field_name : [< DefiningName.t] -> Typ.Fieldname.t
+(** From a defining name that represents a field in a record, return the the name
+ * of this field *)
+
 val sort_params : Procdesc.t -> ParamActual.t list -> Expr.t list
 (** Given a param to actual mapping list, return the actuals in the order of
  * the procedure description *)

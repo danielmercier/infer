@@ -195,6 +195,7 @@ module T = struct
     | JavaClass of Mangled.t
     | ObjcClass of QualifiedCppName.t
     | ObjcProtocol of QualifiedCppName.t
+    | AdaRecord of Mangled.t
   [@@deriving compare]
 
   and template_arg = TType of t | TInt of Int64.t | TNull | TNullPtr | TOpaque
@@ -313,7 +314,7 @@ and pp_name_c_syntax pe f = function
       QualifiedCppName.pp f name
   | CppClass (name, template_spec) ->
       F.fprintf f "%a%a" QualifiedCppName.pp name (pp_template_spec_info pe) template_spec
-  | JavaClass name ->
+  | JavaClass name | AdaRecord name ->
       Mangled.pp f name
 
 
@@ -355,7 +356,7 @@ module Name = struct
     | CppClass (name, templ_args) ->
         let template_suffix = F.asprintf "%a" (pp_template_spec_info Pp.text) templ_args in
         QualifiedCppName.append_template_args_to_last name ~args:template_suffix
-    | JavaClass _ ->
+    | JavaClass _ | AdaRecord _ ->
         QualifiedCppName.empty
 
 
@@ -364,7 +365,7 @@ module Name = struct
         name
     | CppClass (name, _) ->
         name
-    | JavaClass _ ->
+    | JavaClass _ | AdaRecord _ ->
         QualifiedCppName.empty
 
 
@@ -374,7 +375,7 @@ module Name = struct
     match n with
     | CStruct _ | CUnion _ | CppClass _ | ObjcClass _ | ObjcProtocol _ ->
         qual_name n |> QualifiedCppName.to_qual_string
-    | JavaClass name ->
+    | JavaClass name | AdaRecord name ->
         Mangled.to_string name
 
 
@@ -388,6 +389,8 @@ module Name = struct
           "class"
       | ObjcProtocol _ ->
           "protocol"
+      | AdaRecord _ ->
+          "record"
     in
     F.fprintf fmt "%s %a" (prefix tname) (pp_name_c_syntax Pp.text) tname
 
@@ -407,7 +410,8 @@ module Name = struct
     | CppClass _, CppClass _
     | JavaClass _, JavaClass _
     | ObjcClass _, ObjcClass _
-    | ObjcProtocol _, ObjcProtocol _ ->
+    | ObjcProtocol _, ObjcProtocol _
+    | AdaRecord _, AdaRecord _ ->
         true
     | _ ->
         false
@@ -1438,7 +1442,7 @@ module Procname = struct
 end
 
 module Fieldname = struct
-  type t = Clang of {class_name: Name.t; field_name: string} | Java of string
+  type t = Clang of {class_name: Name.t; field_name: string} | Java of string | Ada of string
   [@@deriving compare]
 
   let equal = [%compare.equal: t]
@@ -1453,7 +1457,7 @@ module Fieldname = struct
   module Map = Caml.Map.Make (T)
 
   (** Convert a fieldname to a string. *)
-  let to_string = function Java fname -> fname | Clang {field_name} -> field_name
+  let to_string = function Java fname | Ada fname -> fname | Clang {field_name} -> field_name
 
   (** Convert a fieldname to a simplified string with at most one-level path. *)
   let to_simplified_string fn =
@@ -1479,7 +1483,10 @@ module Fieldname = struct
     match String.rsplit2 s ~on:'.' with Some (_, s2) -> s2 | _ -> s
 
 
-  let pp f = function Java field_name | Clang {field_name} -> Format.pp_print_string f field_name
+  let pp f = function
+    | Java field_name | Clang {field_name} | Ada field_name ->
+        Format.pp_print_string f field_name
+
 
   let clang_get_qual_class = function
     | Clang {class_name} ->
@@ -1499,7 +1506,7 @@ module Fieldname = struct
       match field_name with
       | Java _ ->
           String.is_prefix ~prefix:"val$" (to_flat_string field_name)
-      | Clang _ ->
+      | Clang _ | Ada _ ->
           false
 
 
@@ -1524,6 +1531,10 @@ module Fieldname = struct
       let last_char = fn.[fn_len - 1] in
       (last_char >= '0' && last_char <= '9')
       && String.is_suffix fn ~suffix:(this ^ String.of_char last_char)
+  end
+
+  module Ada = struct
+    let from_string n = Ada n
   end
 end
 
