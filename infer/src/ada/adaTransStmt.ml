@@ -91,6 +91,90 @@ let rec trans_if_stmt ctx orig_stmt cond_expr then_stmts else_stmts =
   stmts_expr @ true_block @ false_block @ [Label (loc, end_label)]
 
 
+and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
+  (* Translate a for loop to a list of statements *)
+  match (for_loop_spec :> ForLoopSpec.t) with
+  | `ForLoopSpec
+      { f_iter_expr= (lazy iter_expr)
+      ; f_has_reverse= (lazy has_reverse_node)
+      ; f_loop_type= (lazy (`IterTypeIn _))
+      ; f_var_decl= (lazy (`ForLoopVarDecl {f_id= (lazy var_id)})) } ->
+      let typ =
+        (* DiscreteSubtypeIndication is not an expr, so we need to filter
+             * the different possible values of iter_expr, to return the IR type *)
+        match iter_expr with
+        | ( `CharLiteral _
+          | `RelationOp _
+          | `ExplicitDeref _
+          | `StringLiteral _
+          | `AttributeRef _
+          | `CallExpr _
+          | `TargetName _
+          | `BinOp _
+          | `QualExpr _
+          | `DottedName _
+          | `UpdateAttributeRef _
+          | `Identifier _ ) as expr ->
+            type_of_expr ctx expr
+        | `DiscreteSubtypeIndication {f_name= (lazy name)} ->
+            type_of_expr ctx name
+      in
+      let has_reverse = ReverseNode.p_as_bool has_reverse_node in
+      let loop_var = pvar ctx var_id in
+      let id = Ident.(create_fresh knormal) in
+      let load_loop_var = Sil.Load (id, Exp.Lvar loop_var, typ, location ctx.source_file var_id) in
+      let bounds_stmts, bounds_instrs, low_bound, high_bound = trans_bounds ctx iter_expr in
+      let comparison =
+        if has_reverse then Exp.BinOp (Binop.Ge, Exp.Var id, low_bound)
+        else Exp.BinOp (Binop.Le, Exp.Var id, high_bound)
+      in
+      let loc = location ctx.source_file composite_stmt in
+      let end_loc = end_location ctx.source_file composite_stmt in
+      let prune_true_block =
+        Block
+          { instrs= bounds_instrs @ [load_loop_var; Sil.Prune (comparison, loc, true, Sil.Ik_for)]
+          ; loc
+          ; nodekind=
+              Procdesc.Node.Prune_node (true, Sil.Ik_for, Procdesc.Node.PruneNodeKind_TrueBranch)
+          }
+      in
+      let prune_false_block =
+        Block
+          { instrs=
+              bounds_instrs @ [load_loop_var; Sil.Prune (mk_not comparison, loc, false, Sil.Ik_for)]
+          ; loc= end_loc
+          ; nodekind=
+              Procdesc.Node.Prune_node (false, Sil.Ik_for, Procdesc.Node.PruneNodeKind_FalseBranch)
+          }
+      in
+      let pre_loop_assignment =
+        let rhs = if has_reverse then high_bound else low_bound in
+        Block
+          { instrs= bounds_instrs @ [Sil.Store (Exp.Lvar loop_var, typ, rhs, loc)]
+          ; loc
+          ; nodekind= Procdesc.Node.(Stmt_node (Call "assign")) }
+      in
+      let in_loop_assignment =
+        let op = if has_reverse then Binop.MinusA None else Binop.PlusA None in
+        let rhs = Exp.BinOp (op, Exp.Var id, Exp.one) in
+        Block
+          { instrs= [load_loop_var; Sil.Store (Exp.Lvar loop_var, typ, rhs, loc)]
+          ; loc= end_loc
+          ; nodekind= Procdesc.Node.(Stmt_node (Call "assign")) }
+      in
+      [ pre_loop_assignment
+      ; LoopStmt
+          ( loc
+          , bounds_stmts
+            @ [ Split
+                  ( loc
+                  , [ [prune_true_block] @ loop_stmts @ [in_loop_assignment]
+                    ; [prune_false_block] @ [Jump (loc, Label end_loop)] ] ) ]
+          , end_loop ) ]
+  | `ForLoopSpec {f_loop_type= (lazy (`IterTypeOf _))} ->
+      unimplemented "for X of ..."
+
+
 and trans_composite_stmt ctx composite_stmt =
   match (composite_stmt :> CompositeStmt.t) with
   | #BaseLoopStmt.t as loop_stmt -> (
@@ -107,86 +191,8 @@ and trans_composite_stmt ctx composite_stmt =
       in
       let loop_stmts = trans_stmts new_ctx (BaseLoopStmt.f_stmts loop_stmt) in
       match BaseLoopStmt.f_spec loop_stmt with
-      | Some
-          (`ForLoopSpec
-            { f_iter_expr= (lazy iter_expr)
-            ; f_has_reverse= (lazy has_reverse_node)
-            ; f_loop_type= (lazy (`IterTypeIn _))
-            ; f_var_decl= (lazy (`ForLoopVarDecl {f_id= (lazy var_id)})) }) ->
-          let typ =
-            (* DiscreteSubtypeIndication is not an expr, so we need to filter
-             * the different possible values of iter_expr, to return the IR type *)
-            match iter_expr with
-            | ( `CharLiteral _
-              | `RelationOp _
-              | `ExplicitDeref _
-              | `StringLiteral _
-              | `AttributeRef _
-              | `CallExpr _
-              | `TargetName _
-              | `BinOp _
-              | `QualExpr _
-              | `DottedName _
-              | `UpdateAttributeRef _
-              | `Identifier _ ) as expr ->
-                type_of_expr ctx expr
-            | `DiscreteSubtypeIndication {f_name= (lazy name)} ->
-                type_of_expr ctx name
-          in
-          let has_reverse = ReverseNode.p_as_bool has_reverse_node in
-          let loop_var = pvar ctx var_id in
-          let id = Ident.(create_fresh knormal) in
-          let load_loop_var = Sil.Load (id, Exp.Lvar loop_var, typ, loc) in
-          let bounds_stmts, bounds_instrs, low_bound, high_bound = trans_bounds ctx iter_expr in
-          let comparison =
-            if has_reverse then Exp.BinOp (Binop.Ge, Exp.Var id, low_bound)
-            else Exp.BinOp (Binop.Le, Exp.Var id, high_bound)
-          in
-          let prune_true_block =
-            Block
-              { instrs=
-                  bounds_instrs @ [load_loop_var; Sil.Prune (comparison, loc, true, Sil.Ik_for)]
-              ; loc
-              ; nodekind=
-                  Procdesc.Node.Prune_node
-                    (true, Sil.Ik_for, Procdesc.Node.PruneNodeKind_TrueBranch) }
-          in
-          let prune_false_block =
-            Block
-              { instrs=
-                  bounds_instrs
-                  @ [load_loop_var; Sil.Prune (mk_not comparison, loc, false, Sil.Ik_for)]
-              ; loc= end_location ctx.source_file composite_stmt
-              ; nodekind=
-                  Procdesc.Node.Prune_node
-                    (false, Sil.Ik_for, Procdesc.Node.PruneNodeKind_FalseBranch) }
-          in
-          let pre_loop_assignment =
-            let rhs = if has_reverse then high_bound else low_bound in
-            Block
-              { instrs= bounds_instrs @ [Sil.Store (Exp.Lvar loop_var, typ, rhs, loc)]
-              ; loc
-              ; nodekind= Procdesc.Node.(Stmt_node (Call "assign")) }
-          in
-          let in_loop_assignment =
-            let op = if has_reverse then Binop.MinusA None else Binop.PlusA None in
-            let rhs = Exp.BinOp (op, Exp.Var id, Exp.one) in
-            Block
-              { instrs= [load_loop_var; Sil.Store (Exp.Lvar loop_var, typ, rhs, loc)]
-              ; loc
-              ; nodekind= Procdesc.Node.(Stmt_node (Call "assign")) }
-          in
-          [ pre_loop_assignment
-          ; LoopStmt
-              ( loc
-              , bounds_stmts
-                @ [ Split
-                      ( loc
-                      , [ [prune_true_block] @ loop_stmts @ [in_loop_assignment]
-                        ; [prune_false_block] @ [Jump (loc, Label end_loop)] ] ) ]
-              , end_loop ) ]
-      | Some (`ForLoopSpec {f_loop_type= (lazy (`IterTypeOf _))}) ->
-          unimplemented "for X of ..."
+      | Some (`ForLoopSpec _ as for_loop_spec) ->
+          trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts
       | Some (`WhileLoopSpec {f_expr= (lazy expr)}) ->
           let stmts, () = trans_expr ctx (Goto (Next, Label end_loop)) expr in
           [LoopStmt (loc, stmts @ loop_stmts, end_loop)]
