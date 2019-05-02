@@ -234,6 +234,51 @@ and trans_composite_stmt ctx composite_stmt =
       in
       let end_stmt_loc = end_location ctx.source_file composite_stmt in
       decl_stmts @ stmts @ [Jump (end_stmt_loc, Exit)]
+  | `CaseStmt
+      { f_expr= (lazy expr)
+      ; f_alternatives= (lazy (`CaseStmtAlternativeList {list= (lazy alternatives)})) } ->
+      let loc = location ctx.source_file composite_stmt in
+      let typ = type_of_expr ctx expr in
+      let end_case_label = mk_label () in
+      let expr_stmts, (instrs, exp) = trans_expr ctx (Tmp "case_stmt") expr in
+      let is_others alt =
+        match CaseStmtAlternative.f_choices alt |> AlternativesList.f_list with
+        | [#OthersDesignator.t] ->
+            true
+        | _ ->
+            false
+      in
+      let rec trans_alternatives = function
+        | [alt] when is_others alt ->
+            let case_stmts = CaseStmtAlternative.f_stmts alt |> trans_stmts ctx in
+            case_stmts @ [Jump (loc, Label end_case_label)]
+        | alt :: alternatives ->
+            let next_case_label = mk_label () in
+            let choices =
+              (* Filter all choices, to be of the desired typ *)
+              let f = function
+                | (#Expr.t | #DiscreteSubtypeIndication.t) as expr ->
+                    expr
+                | _ as choice ->
+                    L.die InternalError "Cannot generate membership expression for %s"
+                      (AdaNode.short_image choice)
+              in
+              CaseStmtAlternative.f_choices alt |> AlternativesList.f_list |> List.map ~f
+            in
+            let case_stmts = CaseStmtAlternative.f_stmts alt |> trans_stmts ctx in
+            let choices_stmts, () =
+              trans_membership_expr ctx
+                (Goto (Next, Label next_case_label))
+                composite_stmt typ (of_exp instrs exp) choices
+            in
+            choices_stmts @ case_stmts
+            @ [Jump (loc, Label end_case_label)]
+            @ [Label (loc, next_case_label)]
+            @ trans_alternatives alternatives
+        | [] ->
+            []
+      in
+      expr_stmts @ trans_alternatives alternatives @ [Label (loc, end_case_label)]
   | _ ->
       unimplemented "trans_composite_stmt for %s" (AdaNode.short_image composite_stmt)
 
