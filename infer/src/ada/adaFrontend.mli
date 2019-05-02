@@ -16,6 +16,21 @@ module DefiningNameMap : Caml.Map.S with type key = DefiningName.t
 
 module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
 
+(** The context is passed around for the translation of a subprograms, it contains:
+  * - cfg: the current infer control flow graph of the supbrogram.
+  * - tenv: the infer type environement.
+  * - source_file: the infer source file in which the procedure is located.
+  * - proc_desc: the infer procedure description of the one being translated.
+  * - label_table: an hash table that maps a label in the original source code,
+  *   to a label in the intermediate CFG representation.
+  * - loop_map: Loops can have names, this map, maps the name of a loop to
+  *   the label of the end of the loop to use in ExitStmt.
+  * - current_loop: If we are translating the body of a loop, this is equal
+  *   to the inner most loop end label that we are translating.
+  * - subst: A substitution map that should be used to get a program variable
+  *   from a name. If the map doesn't contain a pvar for the given name, then
+  *   a generic one can be created. This is used for ExtendedReturnStmt where
+  *   the name of the variable is mapped to the "return" infer identifier.*)
 type context =
   { cfg: Cfg.t
   ; tenv: Tenv.t
