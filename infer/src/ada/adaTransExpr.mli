@@ -72,4 +72,13 @@ val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a
 val trans_bounds :
   context -> [< Expr.t | DiscreteSubtypeIndication.t] -> stmt list * Sil.instr list * Exp.t * Exp.t
 
+val trans_membership_expr :
+     context
+  -> 'a continuation
+  -> [< AdaNode.t]
+  -> Typ.t
+  -> expr
+  -> [< Expr.t | DiscreteSubtypeIndication.t] list
+  -> stmt list * 'a
+
 val type_of_expr : context -> [< Expr.t] -> Typ.t
