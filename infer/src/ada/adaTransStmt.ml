@@ -300,8 +300,9 @@ and trans_stmt ctx stmt =
       trans_simple_stmt ctx simple_stmt
   | #CompositeStmt.t as composite_stmt ->
       trans_composite_stmt ctx composite_stmt
-  | _ as stmt ->
-      unimplemented "trans_stmt for %s" (AdaNode.short_image stmt)
+  | #ErrorStmt.t as error_stmt as stmt ->
+      (* Syntax error, simply skip the statement *)
+      []
 
 
 and trans_decl ctx decl =
