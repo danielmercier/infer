@@ -29,6 +29,14 @@ let rec mk_not exp =
       BinOp (LOr, mk_not lhs, mk_not rhs)
   | BinOp (LOr, lhs, rhs) ->
       BinOp (LAnd, mk_not lhs, mk_not rhs)
+  | BinOp (Eq, lhs, rhs) ->
+      BinOp (Ne, lhs, rhs)
+  | BinOp (Ne, lhs, rhs) ->
+      BinOp (Eq, lhs, rhs)
+  | _ when Exp.equal exp (Exp.bool true) ->
+      Exp.bool false
+  | _ when Exp.equal exp (Exp.bool false) ->
+      Exp.bool true
   | _ ->
       UnOp (Unop.LNot, exp, Some Typ.(mk (Tint IBool)))
 
