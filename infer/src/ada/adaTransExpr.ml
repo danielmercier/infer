@@ -280,6 +280,45 @@ let rec trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list 
   return ctx cont binop (type_of_expr ctx binop) (lhs_stmts @ rhs_stmts) inlined_result
 
 
+and trans_unop : type a. context -> a continuation -> UnOp.t -> stmt list * a =
+ fun ctx cont unop ->
+  let typ = type_of_expr ctx unop in
+  let op = UnOp.f_op unop in
+  let stmts, expr = trans_expr_ ctx Inline (UnOp.f_expr unop :> Expr.t) in
+  match op with
+  | `OpPlus _ ->
+      return ctx cont unop typ stmts expr
+  | `OpMinus _ ->
+      return ctx cont unop typ stmts
+        (map
+           ~f:(fun simple_expr ->
+             let instrs, exp = to_exp simple_expr in
+             of_exp instrs (Exp.UnOp (Unop.Neg, exp, Some typ)) )
+           expr)
+  | `OpNot _ ->
+      return ctx cont unop typ stmts
+        (map
+           ~f:(function
+             | Bool b ->
+                 of_bool (not b)
+             | Exp (instrs, exp) ->
+                 of_exp instrs (Exp.UnOp (Unop.LNot, exp, Some typ)) )
+           expr)
+  | `OpAbs _ ->
+      (* Translate a call to abs to an if expression,
+       * abs x is
+       *    if 0 <= x then x else -x *)
+      return ctx cont unop typ stmts
+        (map
+           ~f:(fun simple_expr ->
+             let instrs, exp = to_exp simple_expr in
+             If
+               ( instrs
+               , Exp.le Exp.zero exp
+               , (of_exp instrs exp, of_exp instrs (Exp.UnOp (Unop.Neg, exp, Some typ))) ) )
+           expr)
+
+
 and trans_enum_literal : type a.
     context -> a continuation -> Typ.t -> EnumLiteralDecl.t -> stmt list * a =
  fun ctx cont typ enum_lit ->
@@ -420,6 +459,12 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
     when is_access attribute ->
       let dest_instrs, dest = trans_dest ctx prefix in
       return ctx cont expr typ [] (of_exp dest_instrs dest)
+  | `UnOp {f_op= (lazy op); f_expr= (lazy expr)} as unop -> (
+    match Name.p_referenced_decl op with
+    | Some ref ->
+        trans_call ctx cont unop ref ([expr] :> Expr.t list)
+    | None ->
+        trans_unop ctx cont unop )
   | #BinOp.t as binop -> (
       let lhs = BinOp.f_left binop in
       let op = BinOp.f_op binop in
