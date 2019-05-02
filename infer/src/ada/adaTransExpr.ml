@@ -204,30 +204,29 @@ let combine ~f lhs_expr rhs_expr =
   map ~f:aux lhs_expr
 
 
-let mk_or lhs_expr rhs_expr =
-  (* Make a shortcircuit or from the two given expressions *)
+let mk_if cond_expr then_expr else_expr =
+  (* Create an if expression by going to the leafs of the condition expression
+   * and create an If there with then_expr as the then branch and else_expr as
+   * then else branch *)
   let f = function
     | Bool true ->
-        of_bool true
+        then_expr
     | Bool false ->
-        rhs_expr
+        else_expr
     | Exp (instrs, exp) ->
-        If (instrs, exp, (of_bool true, rhs_expr))
+        If (instrs, exp, (then_expr, else_expr))
   in
-  map ~f lhs_expr
+  map ~f cond_expr
+
+
+let mk_or lhs_expr rhs_expr =
+  (* Make a shortcircuit or from the two given expressions *)
+  mk_if lhs_expr (of_bool true) rhs_expr
 
 
 let mk_and lhs_expr rhs_expr =
   (* Make a shortcircuit and from the two given expressions *)
-  let f = function
-    | Bool false ->
-        of_bool false
-    | Bool true ->
-        rhs_expr
-    | Exp (instrs, exp) ->
-        If (instrs, exp, (rhs_expr, of_bool false))
-  in
-  map ~f lhs_expr
+  mk_if lhs_expr rhs_expr (of_bool false)
 
 
 let rec trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a =
@@ -509,6 +508,29 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
             map ~f membership_expr
       in
       return ctx cont expr typ (tested_stmts @ membership_stmts) inlined_expr
+  | `IfExpr
+      { f_cond_expr= (lazy cond_expr)
+      ; f_then_expr= (lazy then_expr)
+      ; f_alternatives= (lazy (`ElsifExprPartList {list= (lazy alternatives)}))
+      ; f_else_expr= (lazy (Some else_expr)) } ->
+      let cond_stmts, cond_expr = trans_expr_ ctx Inline (cond_expr :> Expr.t) in
+      let then_stmts, then_expr = trans_expr_ ctx Inline (then_expr :> Expr.t) in
+      let else_stmts, else_expr = trans_expr_ ctx Inline (else_expr :> Expr.t) in
+      let f alternative (stmts, else_expr) =
+        let cond_stmts, cond_expr =
+          trans_expr_ ctx Inline (ElsifExprPart.f_cond_expr alternative :> Expr.t)
+        in
+        let then_stmts, then_expr =
+          trans_expr_ ctx Inline (ElsifExprPart.f_then_expr alternative :> Expr.t)
+        in
+        (stmts @ then_stmts @ cond_stmts, mk_if cond_expr then_expr else_expr)
+      in
+      let elsif_stmts, elsif_expr =
+        List.fold_right ~f ~init:(else_stmts, else_expr) alternatives
+      in
+      return ctx cont expr typ
+        (cond_stmts @ then_stmts @ elsif_stmts)
+        (mk_if cond_expr then_expr elsif_expr)
   | `ParenExpr {f_expr= (lazy expr)} ->
       trans_expr_ ctx cont (expr :> Expr.t)
   | _ as expr ->
