@@ -58,6 +58,12 @@ let record_field name =
       None
 
 
+let load typ loc exp =
+  let id = Ident.(create_fresh knormal) in
+  let load = Sil.Load (id, exp, typ, loc) in
+  ([load], Exp.Var id)
+
+
 let trans_dest ctx dest =
   let rec aux = function
     | `DottedName _ as name -> (
@@ -75,11 +81,10 @@ let trans_dest ctx dest =
         ([], Exp.Lvar (pvar ctx name))
     | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
         let instrs, dest_expr = aux prefix in
-        let id = Ident.(create_fresh knormal) in
-        let load =
-          Sil.Load (id, dest_expr, type_of_expr ctx prefix, location ctx.source_file dest)
+        let load_instrs, load_expr =
+          load (type_of_expr ctx prefix) (location ctx.source_file dest) dest_expr
         in
-        (instrs @ [load], Exp.Var id)
+        (instrs @ load_instrs, load_expr)
     | _ as expr ->
         unimplemented "trans_dest for %s" (AdaNode.short_image expr)
   in
@@ -216,7 +221,8 @@ let combine ~f lhs_expr rhs_expr =
     let lhs_instrs, lhs_exp = to_exp lhs_simple_expr in
     let call_f rhs_simple_expr =
       let rhs_instrs, rhs_exp = to_exp rhs_simple_expr in
-      of_exp (lhs_instrs @ rhs_instrs) (f lhs_exp rhs_exp)
+      let f_instrs, f_exp = f lhs_exp rhs_exp in
+      of_exp (lhs_instrs @ rhs_instrs @ f_instrs) f_exp
     in
     map ~f:call_f rhs_expr
   in
@@ -248,12 +254,21 @@ let mk_and lhs_expr rhs_expr =
   mk_if lhs_expr rhs_expr (of_bool false)
 
 
+let mk_load typ loc expr =
+  let f simple_expr =
+    let instrs, exp = to_exp simple_expr in
+    let load_instrs, load_exp = load typ loc exp in
+    of_exp (instrs @ load_instrs) load_exp
+  in
+  map ~f expr
+
+
 let rec trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a =
  fun ctx cont binop ->
   let lhs = BinOp.f_left binop in
   let rhs = BinOp.f_right binop in
   let simple_binop op =
-    let f lhs_exp rhs_exp = Exp.BinOp (op, lhs_exp, rhs_exp) in
+    let f lhs_exp rhs_exp = ([], Exp.BinOp (op, lhs_exp, rhs_exp)) in
     combine ~f
   in
   let lhs_stmts, lhs_expr_res = trans_expr_ ctx Inline (lhs :> Expr.t) in
@@ -469,9 +484,8 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
         unimplemented "trans_expr for an identifier call %s" (AdaNode.short_image ident) )
   | (#Identifier.t | #DottedName.t | #ExplicitDeref.t) as name ->
       let stmts, dest = trans_dest ctx name in
-      let id = Ident.(create_fresh knormal) in
-      let load = Sil.Load (id, dest, typ, loc) in
-      return ctx cont expr typ [] (of_exp (stmts @ [load]) (Exp.Var id))
+      let load_instrs, load_exp = load typ loc dest in
+      return ctx cont expr typ [] (of_exp (stmts @ load_instrs) load_exp)
   | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
   | `UpdateAttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
     when is_access attribute ->

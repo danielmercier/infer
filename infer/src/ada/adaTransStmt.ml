@@ -306,7 +306,7 @@ and trans_stmt ctx stmt =
       trans_simple_stmt ctx simple_stmt
   | #CompositeStmt.t as composite_stmt ->
       trans_composite_stmt ctx composite_stmt
-  | #ErrorStmt.t as error_stmt as stmt ->
+  | #ErrorStmt.t ->
       (* Syntax error, simply skip the statement *)
       []
 
