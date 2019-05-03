@@ -436,6 +436,140 @@ and trans_bounds_ ctx bounds_expr =
       unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr)
 
 
+(** Translate a RangeSpec which is a constraint of the form
+ * "range X .. Y" to a prune node using the given expr which is expected to be
+ * a rvalue *)
+and trans_range_constraint ctx lal_range typ loc expr =
+  let range = RangeSpec.f_range lal_range in
+  match range with
+  | `BoxExpr _ ->
+      (* A box expr is a placeholder, it doesn't add any contraint *)
+      []
+  | _ ->
+      let bounds_stmts, bounds_instrs, low_bound, high_bound =
+        trans_bounds_ ctx (range :> [Expr.t | DiscreteSubtypeIndication.t])
+      in
+      let bounds_constraint simple_expr =
+        let instrs, exp = to_exp simple_expr in
+        let prune_node =
+          Sil.Prune
+            ( Exp.BinOp (Binop.LAnd, Exp.le low_bound exp, Exp.le exp high_bound)
+            , loc
+            , true
+            , Sil.Ik_bexp )
+        in
+        [ Block
+            { instrs= bounds_instrs @ instrs @ [prune_node]
+            ; loc
+            ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
+      in
+      bounds_stmts @ map_to_stmts ~f:bounds_constraint ~orig_node:lal_range ctx expr
+
+
+(** Translate a constraint on discriminants to prune nodes on the given expressions.
+ * The expression is assumed to be an lvalue.
+ * We generate constraints by accessing each discriminant that have a constraint
+ * and prune the contraint with the expression in the AssocList *)
+and trans_discriminant_constraint ctx lal_discr typ loc expr =
+  let params_actual =
+    DiscriminantConstraint.f_constraints lal_discr |> AssocList.p_zip_with_params
+  in
+  let constrain_discriminant {ParamActual.param; actual} =
+    let actual_stmts, actual_expr = trans_expr_ ctx Inline actual in
+    let mk_equal lhs_exp rhs_exp =
+      (* TODO: access to the field name is temporary, waiting a lal fix for param actual *)
+      let access_field =
+        Exp.Lfield (lhs_exp, Option.value_exn (AdaNode.p_xref param) |> field_name, typ)
+      in
+      let load_instrs, load_exp = load typ loc access_field in
+      (load_instrs, Exp.eq load_exp rhs_exp)
+    in
+    let mk_prune_node simple_expr =
+      let instrs, exp = to_exp simple_expr in
+      let prune_node = Sil.Prune (exp, loc, true, Sil.Ik_bexp) in
+      [ Block
+          { instrs= instrs @ [prune_node]
+          ; loc
+          ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
+    in
+    actual_stmts
+    @ ( combine ~f:mk_equal expr actual_expr
+      |> map_to_stmts ~f:mk_prune_node ~orig_node:lal_discr ctx )
+  in
+  List.map ~f:constrain_discriminant params_actual |> List.concat
+
+
+(** Translate a constraint on a type to prune nodes on the given expressions.
+ * The expression is assumed to be an lvalue *)
+and trans_constraint ctx lal_constraint typ loc expr =
+  match (lal_constraint : Constraint.t) with
+  | `RangeConstraint {f_range= (lazy range)} ->
+      trans_range_constraint ctx range typ loc (mk_load typ loc expr)
+  | `DiscriminantConstraint _ as discr ->
+      trans_discriminant_constraint ctx discr typ loc expr
+  | `DeltaConstraint _ | `DigitsConstraint _ | `IndexConstraint _ ->
+      unimplemented "trans_constraint for %s" (AdaNode.short_image lal_constraint)
+
+
+(** Translate constraints on subtype indications to prune nodes on the given expressions.
+ * The expression is assumed to be an lvalue. A subtype indication is a node
+ * of the form: Integer range 1 .. 10. So we first generate the constraints of
+ * the base type and we append the other constraint if it has one *)
+and trans_subtype_indication_constraint ctx subtype_indication typ loc expr =
+  match Name.p_referenced_decl (SubtypeIndication.f_name subtype_indication) with
+  | Some (#BaseTypeDecl.t as subtype_decl) ->
+      let subtype_constraint_stmts = trans_type_constraint ctx subtype_decl typ loc expr in
+      let constraint_stmts =
+        match SubtypeIndication.f_constraint subtype_indication with
+        | Some constr ->
+            trans_constraint ctx constr typ loc expr
+        | None ->
+            []
+      in
+      subtype_constraint_stmts @ constraint_stmts
+  | _ ->
+      L.die InternalError "Cannot generate a type constraints for subtype %s"
+        (AdaNode.short_image subtype_indication)
+
+
+(** Translate constraints on an enum type to prune nodes on the given expressions.
+ * The expression is assumed to be an rvalue.
+ * For an enum type with 10 elements, we generate a constraint of the form:
+ * 0 <= expr <= 9 *)
+and trans_enum_type_constraint ctx enum_type typ loc expr =
+  let literals = EnumTypeDef.f_enum_literals enum_type |> EnumLiteralDeclList.f_list in
+  let lit_number = List.length literals in
+  let mk_comp simple_expr =
+    (* prune the expression 0 <= expr <= (lit_number - 1) *)
+    let instrs, exp = to_exp simple_expr in
+    let comp =
+      Exp.BinOp
+        (Binop.LAnd, Exp.le Exp.zero exp, Exp.le exp (Exp.int (IntLit.of_int (lit_number - 1))))
+    in
+    let prune_node = Sil.Prune (comp, loc, true, Sil.Ik_bexp) in
+    [ Block
+        { instrs= instrs @ [prune_node]
+        ; loc
+        ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
+  in
+  map_to_stmts ~f:mk_comp ~orig_node:enum_type ctx expr
+
+
+(** Generate the constraints to apply on expr for any type.
+ * expr should be an lvalue *)
+and trans_type_constraint ctx lal_typ typ loc expr =
+  match (lal_typ :> BaseTypeDecl.t) with
+  | `TypeDecl {f_type_def= (lazy (`SignedIntTypeDef {f_range= (lazy range)}))} ->
+      trans_range_constraint ctx range typ loc (mk_load typ loc expr)
+  | `TypeDecl
+      {f_type_def= (lazy (`DerivedTypeDef {f_subtype_indication= (lazy subtype_indication)}))} ->
+      trans_subtype_indication_constraint ctx subtype_indication typ loc expr
+  | `TypeDecl {f_type_def= (lazy (#EnumTypeDef.t as enum_type))} ->
+      trans_enum_type_constraint ctx enum_type typ loc (mk_load typ loc expr)
+  | _ ->
+      unimplemented "trans_type_constraint for %s" (AdaNode.short_image lal_typ)
+
+
 and trans_membership_expr_ : type a.
        context
     -> a continuation
@@ -586,8 +720,16 @@ let trans_bounds ctx bounds_expr =
   trans_bounds_ ctx (bounds_expr :> [Expr.t | DiscreteSubtypeIndication.t])
 
 
-and trans_membership_expr ctx cont orig_node typ expr alternatives =
+let trans_membership_expr ctx cont orig_node typ expr alternatives =
   trans_membership_expr_ ctx cont
     (orig_node :> AdaNode.t)
     typ expr
     (alternatives :> [Expr.t | DiscreteSubtypeIndication.t] list)
+
+
+let trans_type_expr_constraint ctx type_expr typ loc expr =
+  match (type_expr :> TypeExpr.t) with
+  | #SubtypeIndication.t as subtype_indication ->
+      trans_subtype_indication_constraint ctx subtype_indication typ loc expr
+  | _ ->
+      unimplemented "trans_type_expr for %s" (AdaNode.short_image type_expr)

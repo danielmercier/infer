@@ -81,4 +81,9 @@ val trans_membership_expr :
   -> [< Expr.t | DiscreteSubtypeIndication.t] list
   -> stmt list * 'a
 
+val trans_type_expr_constraint :
+  context -> [< TypeExpr.t] -> Typ.t -> Location.t -> expr -> stmt list
+(** Translate the constraints of the given type expression to a list of
+ * prune statements. expr should be an lvalue *)
+
 val type_of_expr : context -> [< Expr.t] -> Typ.t
