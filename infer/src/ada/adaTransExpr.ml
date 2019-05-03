@@ -470,6 +470,16 @@ and trans_membership_expr_ : type a.
 
 and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
  fun ctx cont expr ->
+  try
+    (* We try first to evaluate the expression as an integer before calling the
+     * more general translation of expressions *)
+    return ctx cont expr (type_of_expr ctx expr) []
+      (of_exp [] (Exp.int (IntLit.of_int (Expr.p_eval_as_int expr))))
+  with _ -> trans_any_expr_ ctx cont expr
+
+
+and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
+ fun ctx cont expr ->
   let typ = type_of_expr ctx expr in
   let loc = location ctx.source_file expr in
   match (expr :> Expr.t) with
