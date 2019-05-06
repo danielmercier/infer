@@ -15,6 +15,18 @@ let unimplemented fmt =
   F.kasprintf (fun msg -> L.die InternalError "%s is not implemented" msg) fmt
 
 
+(** A parameter can either be passed by copy or by reference. This type is
+ * used to differenciate both passing methods *)
+type param_mode = Copy | Reference
+
+(** Map a mode of a function to the parameter passing strategy *)
+let param_mode = function
+  | Some (`ModeDefault _) | Some (`ModeIn _) | None ->
+      Copy
+  | Some (`ModeInOut _) | Some (`ModeOut _) ->
+      Reference
+
+
 module Label = Int
 module DefiningNameMap = Caml.Map.Make (DefiningName)
 module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
@@ -24,6 +36,8 @@ module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
   * - tenv: the infer type environement.
   * - source_file: the infer source file in which the procedure is located.
   * - proc_desc: the infer procedure description of the one being translated.
+  * - params_modes: A table that maps a defining name referencing a parameter,
+  *   to its mode, either passed by copy, or by reference.
   * - ret_type: If this is a context for a function, this is the type expression
   *   of the returned value. Otherwise it is None.
   * - label_table: an hash table that maps a label in the original source code,
@@ -41,17 +55,19 @@ type context =
   ; tenv: Tenv.t
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
+  ; params_modes: param_mode DefiningNameMap.t
   ; ret_type: TypeExpr.t option
   ; label_table: Label.t DefiningNameTable.t
   ; loop_map: Label.t DefiningNameMap.t
   ; current_loop: Label.t option
   ; subst: Pvar.t DefiningNameMap.t }
 
-let mk_context cfg tenv source_file proc_desc ret_type =
+let mk_context cfg tenv source_file proc_desc params_modes ret_type =
   { cfg
   ; tenv
   ; source_file
   ; proc_desc
+  ; params_modes
   ; ret_type= (ret_type :> TypeExpr.t option)
   ; label_table= DefiningNameTable.create 24
   ; loop_map= DefiningNameMap.empty
@@ -103,8 +119,9 @@ let end_location source_file node =
 let map_params ~f params =
   let f param =
     let type_expr = ParamSpec.f_type_expr param in
+    let mode = ParamSpec.f_mode param in
     ParamSpec.f_ids param |> DefiningNameList.f_list
-    |> List.map ~f:(fun name -> f (name, type_expr))
+    |> List.map ~f:(fun name -> f (name, type_expr, mode))
   in
   Params.f_params params |> ParamSpecList.f_list |> List.map ~f |> List.concat
 
@@ -139,7 +156,7 @@ let get_proc_name body =
   let params =
     match SubpSpec.f_subp_params spec with
     | Some params ->
-        map_params ~f:(fun (_, typ) -> unique_type_name typ) params
+        map_params ~f:(fun (_, typ, _) -> unique_type_name typ) params
     | None ->
         []
   in
@@ -187,7 +204,7 @@ let field_name name = AdaNode.text (name :> DefiningName.t) |> Typ.Fieldname.Ada
 let sort_params _ param_actuals =
   (* TODO: This should sort the params but for now there is an issue in
    * Libadalang with the type of ParamActual *)
-  List.map ~f:(fun {ParamActual.actual} -> actual) param_actuals
+  param_actuals
 
 
 let is_access attribute = String.equal (String.lowercase (AdaNode.text attribute)) "access"

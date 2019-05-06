@@ -21,8 +21,26 @@ let trans_spec cfg tenv source_file subp_body =
   let subp_spec = BaseSubpBody.f_subp_spec subp_body in
   let formals =
     SubpSpec.f_subp_params subp_spec
-    >>| map_params ~f:(fun (name, typ) -> (unique_defining_name name, trans_type_expr tenv typ))
+    >>| map_params ~f:(fun (name, typ, mode) ->
+            ( unique_defining_name name
+            , let ir_typ = trans_type_expr tenv typ in
+              match param_mode mode with
+              | Copy ->
+                  ir_typ
+              | Reference ->
+                  (* If the variable is passed by reference, the type is a
+                   * pointer to the real type *)
+                  Typ.mk (Tptr (ir_typ, Pk_reference)) ) )
     |> Option.value ~default:[]
+  in
+  let params_modes =
+    (* Create the table that maps a defining name to it's mode *)
+    SubpSpec.f_subp_params subp_spec
+    >>| map_params ~f:(fun (name, _, mode) -> (name, param_mode mode))
+    >>| List.fold_left
+          ~f:(fun name_map (name, mode) -> DefiningNameMap.add name mode name_map)
+          ~init:DefiningNameMap.empty
+    |> Option.value ~default:DefiningNameMap.empty
   in
   let ret_type_expr = SubpSpec.f_subp_returns subp_spec in
   let ret_type = ret_type_expr >>| trans_type_expr tenv |> Option.value ~default:Typ.void in
@@ -34,7 +52,7 @@ let trans_spec cfg tenv source_file subp_body =
     ; ret_type }
   in
   let proc_desc = Cfg.create_proc_desc cfg proc_attributes in
-  mk_context cfg tenv source_file proc_desc ret_type_expr
+  mk_context cfg tenv source_file proc_desc params_modes ret_type_expr
 
 
 let trans_subp_body ctx subp =

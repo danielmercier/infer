@@ -10,6 +10,13 @@ open Libadalang
 
 val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
 
+(** A parameter can either be passed by copy or by reference. This type is
+ * used to differenciate both passing methods *)
+type param_mode = Copy | Reference
+
+val param_mode : Mode.t option -> param_mode
+(** Map a mode of a function to the parameter passing strategy *)
+
 module Label = Int
 
 module DefiningNameMap : Caml.Map.S with type key = DefiningName.t
@@ -21,6 +28,8 @@ module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
   * - tenv: the infer type environement.
   * - source_file: the infer source file in which the procedure is located.
   * - proc_desc: the infer procedure description of the one being translated.
+  * - params_modes: A table that maps a defining name referencing a parameter,
+  *   to its mode, either passed by copy, or by reference.
   * - ret_type: If this is a context for a function, this is the type expression
   *   of the returned value. Otherwise it is None.
   * - label_table: an hash table that maps a label in the original source code,
@@ -38,13 +47,21 @@ type context =
   ; tenv: Tenv.t
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
+  ; params_modes: param_mode DefiningNameMap.t
   ; ret_type: TypeExpr.t option
   ; label_table: Label.t DefiningNameTable.t
   ; loop_map: Label.t DefiningNameMap.t
   ; current_loop: Label.t option
   ; subst: Pvar.t DefiningNameMap.t }
 
-val mk_context : Cfg.t -> Tenv.t -> SourceFile.t -> Procdesc.t -> [< TypeExpr.t] option -> context
+val mk_context :
+     Cfg.t
+  -> Tenv.t
+  -> SourceFile.t
+  -> Procdesc.t
+  -> param_mode DefiningNameMap.t
+  -> [< TypeExpr.t] option
+  -> context
 (** Creates a new context with given arguments *)
 
 val mk_label : unit -> Label.t
@@ -82,6 +99,7 @@ val map_params :
              | ConstrainedSubtypeIndication.t
              | DiscreteSubtypeIndication.t
              | SubtypeIndication.t ]
+           * Mode.t option
         -> 'a)
   -> [< Params.t]
   -> 'a list
@@ -110,7 +128,7 @@ val field_name : [< DefiningName.t] -> Typ.Fieldname.t
 (** From a defining name that represents a field in a record, return the the name
  * of this field *)
 
-val sort_params : Procdesc.t -> ParamActual.t list -> Expr.t list
+val sort_params : Procdesc.t -> ParamActual.t list -> ParamActual.t list
 (** Given a param to actual mapping list, return the actuals in the order of
  * the procedure description *)
 

@@ -77,8 +77,16 @@ let trans_dest ctx dest =
               , type_of_expr ctx name ) )
       | None ->
           ([], Exp.Lvar (pvar ctx name)) )
-    | `Identifier _ as name ->
-        ([], Exp.Lvar (pvar ctx name))
+    | `Identifier _ as name -> (
+        let typ = type_of_expr ctx name in
+        let defining_name = Option.value_exn (AdaNode.p_xref name) in
+        let dest_expr = Exp.Lvar (pvar ctx name) in
+        match DefiningNameMap.find_opt defining_name ctx.params_modes with
+        | Some Reference ->
+            let ptr_typ = Typ.(mk (Tptr (typ, Pk_reference))) in
+            load ptr_typ (location ctx.source_file dest) dest_expr
+        | Some Copy | None ->
+            ([], dest_expr) )
     | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
         let instrs, dest_expr = aux prefix in
         let load_instrs, load_expr =
@@ -384,7 +392,7 @@ and trans_call : type a.
     -> a continuation
     -> [< AdaNode.t]
     -> [< BasicDecl.t]
-    -> [< Expr.t] list
+    -> (param_mode * [< Expr.t]) list
     -> stmt list * a =
  fun ctx cont call call_ref args ->
   match call_ref with
@@ -396,9 +404,33 @@ and trans_call : type a.
       let loc = location ctx.source_file call in
       let typ = type_of_expr ctx call in
       let proc_name = get_proc_name subp in
-      let f (stmts, instrs, args) expr =
-        let arg_stmts, (arg_instrs, arg_expr) = trans_expr_ ctx (Tmp "arg") (expr :> Expr.t) in
-        let typ_arg = type_of_expr ctx expr in
+      let f (stmts, instrs, args) (mode, expr) =
+        let arg_stmts, (arg_instrs, arg_expr) =
+          match mode with
+          | Copy ->
+              trans_expr_ ctx (Tmp "arg") (expr :> Expr.t)
+          | Reference -> (
+            match (expr :> Expr.t) with
+            | ( #AttributeRef.t
+              | #CallExpr.t
+              | #CharLiteral.t
+              | #DottedName.t
+              | #ExplicitDeref.t
+              | #Identifier.t
+              | #QualExpr.t
+              | #StringLiteral.t
+              | #TargetName.t ) as lvalue ->
+                ([], trans_dest ctx lvalue)
+            | _ ->
+                L.die InternalError "out parameter should be an lvalue" )
+        in
+        let typ_arg =
+          match mode with
+          | Copy ->
+              type_of_expr ctx expr
+          | Reference ->
+              Typ.(mk (Tptr (type_of_expr ctx expr, Pk_reference)))
+        in
         (stmts @ arg_stmts, instrs @ arg_instrs, args @ [(arg_expr, typ_arg)])
       in
       let stmts, instrs, args = List.fold_left ~f ~init:([], [], []) args in
@@ -638,7 +670,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
   | `UnOp {f_op= (lazy op); f_expr= (lazy expr)} as unop -> (
     match Name.p_referenced_decl op with
     | Some ref ->
-        trans_call ctx cont unop ref ([expr] :> Expr.t list)
+        trans_call ctx cont unop ref ([(Copy, expr)] :> (param_mode * Expr.t) list)
     | None ->
         trans_unop ctx cont unop )
   | #BinOp.t as binop -> (
@@ -647,12 +679,21 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       let rhs = BinOp.f_right binop in
       match Name.p_referenced_decl op with
       | Some ref ->
-          trans_call ctx cont binop ref ([lhs; rhs] :> Expr.t list)
+          trans_call ctx cont binop ref ([(Copy, lhs); (Copy, rhs)] :> (param_mode * Expr.t) list)
       | None ->
           trans_binop ctx cont binop )
   | `CallExpr {f_name= (lazy name); f_suffix= (lazy (#AssocList.t as assoc_list))} as call_expr
     when Name.p_is_call call_expr -> (
-      let sorted_params = AssocList.p_zip_with_params assoc_list |> sort_params ctx.proc_desc in
+      let sorted_params =
+        AssocList.p_zip_with_params assoc_list
+        |> sort_params ctx.proc_desc
+        |> List.map ~f:(fun {ParamActual.param; actual} ->
+               match param with
+               | #ParamSpec.t as param_spec ->
+                   (param_mode (ParamSpec.f_mode param_spec), actual)
+               | _ ->
+                   L.die InternalError "Should be called on a procedure param_actuals" )
+      in
       match Name.p_referenced_decl name with
       | Some ref ->
           trans_call ctx cont expr ref sorted_params
