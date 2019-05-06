@@ -21,6 +21,8 @@ module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
   * - tenv: the infer type environement.
   * - source_file: the infer source file in which the procedure is located.
   * - proc_desc: the infer procedure description of the one being translated.
+  * - ret_type: If this is a context for a function, this is the type expression
+  *   of the returned value. Otherwise it is None.
   * - label_table: an hash table that maps a label in the original source code,
   *   to a label in the intermediate CFG representation.
   * - loop_map: Loops can have names, this map, maps the name of a loop to
@@ -36,12 +38,13 @@ type context =
   ; tenv: Tenv.t
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
+  ; ret_type: TypeExpr.t option
   ; label_table: Label.t DefiningNameTable.t
   ; loop_map: Label.t DefiningNameMap.t
   ; current_loop: Label.t option
   ; subst: Pvar.t DefiningNameMap.t }
 
-val mk_context : Cfg.t -> Tenv.t -> SourceFile.t -> Procdesc.t -> context
+val mk_context : Cfg.t -> Tenv.t -> SourceFile.t -> Procdesc.t -> [< TypeExpr.t] option -> context
 (** Creates a new context with given arguments *)
 
 val mk_label : unit -> Label.t
@@ -113,5 +116,18 @@ val sort_params : Procdesc.t -> ParamActual.t list -> Expr.t list
 
 val is_access : Identifier.t -> bool
 (** Return true if the identifier is refering to 'Access *)
+
+val lvalue_type_expr :
+     [< AttributeRef.t
+     | CallExpr.t
+     | CharLiteral.t
+     | DottedName.t
+     | Identifier.t
+     | QualExpr.t
+     | StringLiteral.t
+     | TargetName.t
+     | ExplicitDeref.t ]
+  -> TypeExpr.t
+(** Return the type expression for an lvalue *)
 
 val pp : Format.formatter -> stmt list -> unit

@@ -24,6 +24,8 @@ module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
   * - tenv: the infer type environement.
   * - source_file: the infer source file in which the procedure is located.
   * - proc_desc: the infer procedure description of the one being translated.
+  * - ret_type: If this is a context for a function, this is the type expression
+  *   of the returned value. Otherwise it is None.
   * - label_table: an hash table that maps a label in the original source code,
   *   to a label in the intermediate CFG representation.
   * - loop_map: Loops can have names, this map, maps the name of a loop to
@@ -39,16 +41,18 @@ type context =
   ; tenv: Tenv.t
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
+  ; ret_type: TypeExpr.t option
   ; label_table: Label.t DefiningNameTable.t
   ; loop_map: Label.t DefiningNameMap.t
   ; current_loop: Label.t option
   ; subst: Pvar.t DefiningNameMap.t }
 
-let mk_context cfg tenv source_file proc_desc =
+let mk_context cfg tenv source_file proc_desc ret_type =
   { cfg
   ; tenv
   ; source_file
   ; proc_desc
+  ; ret_type= (ret_type :> TypeExpr.t option)
   ; label_table= DefiningNameTable.create 24
   ; loop_map= DefiningNameMap.empty
   ; current_loop= None
@@ -187,6 +191,51 @@ let sort_params _ param_actuals =
 
 
 let is_access attribute = String.equal (String.lowercase (AdaNode.text attribute)) "access"
+
+let lvalue_type_expr lvalue =
+  let type_expr =
+    match Name.p_referenced_decl lvalue >>= BasicDecl.p_type_expression with
+    | Some type_expr ->
+        type_expr
+    | None ->
+        L.die InternalError "Cannot get the type expression for %s" (AdaNode.short_image lvalue)
+  in
+  match lvalue with
+  | #AttributeRef.t
+  | #CallExpr.t
+  | #CharLiteral.t
+  | #DottedName.t
+  | #Identifier.t
+  | #QualExpr.t
+  | #StringLiteral.t
+  | #TargetName.t ->
+      type_expr
+  | #ExplicitDeref.t -> (
+      (* For an explicit deref, the type expression will denote an access
+       * but we want the type of the underlying accessed element *)
+      let access_type_element_type base_type_decl =
+        match (base_type_decl :> BaseTypeDecl.t) with
+        | #TypeDecl.t as type_decl -> (
+          match TypeDecl.f_type_def type_decl with
+          | `TypeAccessDef {TypeAccessDefType.f_subtype_indication= (lazy subtype_indication)} ->
+              (subtype_indication :> TypeExpr.t)
+          | _ ->
+              L.die InternalError "ExplicitDeref type should be an access type" )
+        | _ ->
+            L.die InternalError "ExplicitDeref type should be an access type"
+      in
+      match type_expr with
+      | #AnonymousType.t as anon ->
+          access_type_element_type (AnonymousType.f_type_decl anon)
+      | #SubtypeIndication.t as subtype_indication -> (
+        match SubtypeIndication.f_name subtype_indication |> Name.p_referenced_decl with
+        | Some (#BaseTypeDecl.t as type_decl) ->
+            access_type_element_type type_decl
+        | _ ->
+            L.die InternalError "ExplicitDeref type should be an access type" )
+      | #EnumLitSynthTypeExpr.t ->
+          L.die InternalError "ExplicitDeref type should be an access type" )
+
 
 let rec pp_stmt fmt stmt =
   match stmt with

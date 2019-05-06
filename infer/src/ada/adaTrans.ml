@@ -14,7 +14,8 @@ open AdaCfg
 open Option.Monad_infix
 module L = Logging
 
-(** Translate a subprogram spec to an infer procedure description *)
+(** Translate a subprogram spec to an infer procedure description, and return
+ * a newly created context *)
 let trans_spec cfg tenv source_file subp_body =
   let proc_name = get_proc_name subp_body in
   let subp_spec = BaseSubpBody.f_subp_spec subp_body in
@@ -23,9 +24,8 @@ let trans_spec cfg tenv source_file subp_body =
     >>| map_params ~f:(fun (name, typ) -> (unique_defining_name name, trans_type_expr tenv typ))
     |> Option.value ~default:[]
   in
-  let ret_type =
-    SubpSpec.f_subp_returns subp_spec >>| trans_type_expr tenv |> Option.value ~default:Typ.void
-  in
+  let ret_type_expr = SubpSpec.f_subp_returns subp_spec in
+  let ret_type = ret_type_expr >>| trans_type_expr tenv |> Option.value ~default:Typ.void in
   let proc_attributes =
     { (ProcAttributes.default source_file proc_name) with
       formals
@@ -33,7 +33,8 @@ let trans_spec cfg tenv source_file subp_body =
     ; loc= location source_file subp_body
     ; ret_type }
   in
-  Cfg.create_proc_desc cfg proc_attributes
+  let proc_desc = Cfg.create_proc_desc cfg proc_attributes in
+  mk_context cfg tenv source_file proc_desc ret_type_expr
 
 
 let trans_subp_body ctx subp =
@@ -49,8 +50,7 @@ let trans_subp_body ctx subp =
 
 
 let trans_subp cfg tenv source_file subp =
-  let proc_desc = trans_spec cfg tenv source_file subp in
-  let ctx = mk_context cfg tenv source_file proc_desc in
+  let ctx = trans_spec cfg tenv source_file subp in
   match (subp :> BaseSubpBody.t) with
   | `SubpBody _ as subp_body ->
       trans_subp_body ctx subp_body

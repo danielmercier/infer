@@ -13,33 +13,36 @@ open AdaTransExpr
 open Option.Monad_infix
 module L = Logging
 
+(** Translate an assignment to a list of statements *)
+let trans_assignment ctx orig_node lal_type_expr dest_instrs dest_expr expr =
+  let typ = trans_type_expr ctx.tenv lal_type_expr in
+  let loc = location ctx.source_file orig_node in
+  let f simple_expr =
+    let expr_instrs, exp = to_exp simple_expr in
+    let assignment = Sil.Store (dest_expr, typ, exp, loc) in
+    let instrs = dest_instrs @ expr_instrs @ [assignment] in
+    let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
+    [Block {instrs; loc; nodekind}]
+  in
+  map_to_stmts ~f ~orig_node ctx expr
+
+
 let trans_simple_stmt ctx simple_stmt =
   let loc = location ctx.source_file simple_stmt in
   match (simple_stmt :> SimpleStmt.t) with
   | `AssignStmt {f_dest= (lazy dest); f_expr= (lazy expr)} ->
+      let lal_type_expr = lvalue_type_expr dest in
       let dest_instrs, dest_expr = trans_dest ctx dest in
-      let typ = type_of_expr ctx dest in
-      let f simple_expr =
-        let expr_instrs, expr = to_exp simple_expr in
-        let assignment = Sil.Store (dest_expr, typ, expr, loc) in
-        let instrs = dest_instrs @ expr_instrs @ [assignment] in
-        let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
-        [Block {instrs; loc; nodekind}]
-      in
       let stmts, result = trans_expr ctx Inline expr in
-      stmts @ map_to_stmts ~f ~orig_node:simple_stmt ctx result
-  | `ReturnStmt {f_return_expr= (lazy (Some expr))} ->
-      let typ = Procdesc.get_ret_type ctx.proc_desc in
-      let f simple_expr =
-        let expr_instrs, expr = to_exp simple_expr in
+      stmts @ trans_assignment ctx simple_stmt lal_type_expr dest_instrs dest_expr result
+  | `ReturnStmt {f_return_expr= (lazy (Some expr))} -> (
+    match ctx.ret_type with
+    | Some type_expr ->
         let return = Exp.Lvar (Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc)) in
-        let assignment = Sil.Store (return, typ, expr, loc) in
-        let instrs = expr_instrs @ [assignment] in
-        let nodekind = Procdesc.Node.(Stmt_node ReturnStmt) in
-        [Block {instrs; loc; nodekind}]
-      in
-      let stmts, result = trans_expr ctx Inline expr in
-      stmts @ map_to_stmts ~f ~orig_node:simple_stmt ctx result
+        let stmts, result = trans_expr ctx Inline expr in
+        stmts @ trans_assignment ctx simple_stmt type_expr [] return result
+    | None ->
+        L.die InternalError "The function should have a return type" )
   | `ReturnStmt {f_return_expr= (lazy None)} ->
       [Jump (loc, Exit)]
   | `NullStmt _ ->
