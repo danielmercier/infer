@@ -32,9 +32,10 @@ let trans_simple_stmt ctx simple_stmt =
   match (simple_stmt :> SimpleStmt.t) with
   | `AssignStmt {f_dest= (lazy dest); f_expr= (lazy expr)} ->
       let lal_type_expr = lvalue_type_expr dest in
-      let dest_instrs, dest_expr = trans_dest ctx dest in
+      let dest_stmts, (dest_instrs, dest_expr) = trans_lvalue ctx dest in
       let stmts, result = trans_expr ctx Inline expr in
-      stmts @ trans_assignment ctx simple_stmt lal_type_expr dest_instrs dest_expr result
+      dest_stmts @ stmts
+      @ trans_assignment ctx simple_stmt lal_type_expr dest_instrs dest_expr result
   | `ReturnStmt {f_return_expr= (lazy (Some expr))} -> (
     match ctx.ret_type with
     | Some type_expr ->

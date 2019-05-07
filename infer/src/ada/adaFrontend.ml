@@ -15,6 +15,18 @@ let unimplemented fmt =
   F.kasprintf (fun msg -> L.die InternalError "%s is not implemented" msg) fmt
 
 
+(* Type for values that can represent addresses *)
+type lvalue =
+  [ AttributeRef.t
+  | CallExpr.t
+  | CharLiteral.t
+  | DottedName.t
+  | ExplicitDeref.t
+  | Identifier.t
+  | QualExpr.t
+  | StringLiteral.t
+  | TargetName.t ]
+
 (** A parameter can either be passed by copy or by reference. This type is
  * used to differenciate both passing methods *)
 type param_mode = Copy | Reference
@@ -209,50 +221,69 @@ let sort_params _ param_actuals =
 
 let is_access attribute = String.equal (String.lowercase (AdaNode.text attribute)) "access"
 
-let lvalue_type_expr lvalue =
-  let type_expr =
-    match Name.p_referenced_decl lvalue >>= BasicDecl.p_type_expression with
-    | Some type_expr ->
-        type_expr
-    | None ->
-        L.die InternalError "Cannot get the type expression for %s" (AdaNode.short_image lvalue)
+let rec lvalue_type_expr lvalue =
+  let element_type type_expr (element_type : [< TypeDef.t] -> TypeExpr.t) =
+    let aux base_type_decl =
+      match (base_type_decl :> BaseTypeDecl.t) with
+      | #TypeDecl.t as type_decl ->
+          element_type (TypeDecl.f_type_def type_decl)
+      | _ ->
+          raise (Invalid_argument "")
+    in
+    match type_expr with
+    | #AnonymousType.t as anon ->
+        aux (AnonymousType.f_type_decl anon :> BaseTypeDecl.t)
+    | #SubtypeIndication.t as subtype_indication -> (
+      match SubtypeIndication.f_name subtype_indication |> Name.p_referenced_decl with
+      | Some (#BaseTypeDecl.t as type_decl) ->
+          aux type_decl
+      | _ ->
+          raise (Invalid_argument "") )
+    | #EnumLitSynthTypeExpr.t ->
+        raise (Invalid_argument "")
   in
-  match lvalue with
+  match (lvalue :> lvalue) with
   | #AttributeRef.t
-  | #CallExpr.t
   | #CharLiteral.t
   | #DottedName.t
   | #Identifier.t
   | #QualExpr.t
   | #StringLiteral.t
-  | #TargetName.t ->
-      type_expr
-  | #ExplicitDeref.t -> (
+  | #TargetName.t -> (
+    (* Simply going to the declaration of those nodes and taking the type
+     * expression of the declaration works. *)
+    match Name.p_referenced_decl lvalue >>= BasicDecl.p_type_expression with
+    | Some type_expr ->
+        type_expr
+    | None ->
+        L.die InternalError "Cannot get the type expression for %s" (AdaNode.short_image lvalue) )
+  | `ExplicitDeref {f_prefix= (lazy prefix)} -> (
       (* For an explicit deref, the type expression will denote an access
        * but we want the type of the underlying accessed element *)
-      let access_type_element_type base_type_decl =
-        match (base_type_decl :> BaseTypeDecl.t) with
-        | #TypeDecl.t as type_decl -> (
-          match TypeDecl.f_type_def type_decl with
-          | `TypeAccessDef {TypeAccessDefType.f_subtype_indication= (lazy subtype_indication)} ->
-              (subtype_indication :> TypeExpr.t)
-          | _ ->
-              L.die InternalError "ExplicitDeref type should be an access type" )
+      let access_type_element_type type_def =
+        match (type_def :> TypeDef.t) with
+        | `TypeAccessDef {f_subtype_indication= (lazy subtype_indication)} ->
+            (subtype_indication :> TypeExpr.t)
         | _ ->
-            L.die InternalError "ExplicitDeref type should be an access type"
+            raise (Invalid_argument "")
       in
-      match type_expr with
-      | #AnonymousType.t as anon ->
-          access_type_element_type (AnonymousType.f_type_decl anon)
-      | #SubtypeIndication.t as subtype_indication -> (
-        match SubtypeIndication.f_name subtype_indication |> Name.p_referenced_decl with
-        | Some (#BaseTypeDecl.t as type_decl) ->
-            access_type_element_type type_decl
+      try element_type (lvalue_type_expr prefix) access_type_element_type
+      with Invalid_argument _ ->
+        L.die InternalError "ExplicitDeref type should be an access type" )
+  | `CallExpr {f_name= (lazy name)} -> (
+      let array_type_element_type type_def =
+        match (type_def :> TypeDef.t) with
+        | `ArrayTypeDef {f_component_type= (lazy (`ComponentDef {f_type_expr= (lazy type_expr)}))}
+          ->
+            (type_expr :> TypeExpr.t)
         | _ ->
-            L.die InternalError "ExplicitDeref type should be an access type" )
-      | #EnumLitSynthTypeExpr.t ->
-          L.die InternalError "ExplicitDeref type should be an access type" )
+            raise (Invalid_argument "")
+      in
+      try element_type (lvalue_type_expr name) array_type_element_type
+      with Invalid_argument _ -> L.die InternalError "CallExpr type should be an array type" )
 
+
+let lvalue_type_expr lvalue = lvalue_type_expr (lvalue :> lvalue)
 
 let rec pp_stmt fmt stmt =
   match stmt with

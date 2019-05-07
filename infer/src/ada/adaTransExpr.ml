@@ -64,52 +64,6 @@ let load typ loc exp =
   ([load], Exp.Var id)
 
 
-let trans_dest ctx dest =
-  let rec aux = function
-    | `DottedName _ as name -> (
-      match record_field (DottedName.f_suffix name) with
-      | Some _ ->
-          let prefix_instrs, prefix_expr = aux (DottedName.f_prefix name) in
-          ( prefix_instrs
-          , Exp.Lfield
-              ( prefix_expr
-              , field_name (Option.value_exn (AdaNode.p_xref name))
-              , type_of_expr ctx name ) )
-      | None ->
-          ([], Exp.Lvar (pvar ctx name)) )
-    | `Identifier _ as name -> (
-        let typ = type_of_expr ctx name in
-        let defining_name = Option.value_exn (AdaNode.p_xref name) in
-        let dest_expr = Exp.Lvar (pvar ctx name) in
-        match DefiningNameMap.find_opt defining_name ctx.params_modes with
-        | Some Reference ->
-            let ptr_typ = Typ.(mk (Tptr (typ, Pk_reference))) in
-            load ptr_typ (location ctx.source_file dest) dest_expr
-        | Some Copy | None ->
-            ([], dest_expr) )
-    | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
-        let instrs, dest_expr = aux prefix in
-        let load_instrs, load_expr =
-          load (type_of_expr ctx prefix) (location ctx.source_file dest) dest_expr
-        in
-        (instrs @ load_instrs, load_expr)
-    | _ as expr ->
-        unimplemented "trans_dest for %s" (AdaNode.short_image expr)
-  in
-  aux
-    ( dest
-      :> [ AttributeRef.t
-         | CallExpr.t
-         | CharLiteral.t
-         | DottedName.t
-         | ExplicitDeref.t
-         | Identifier.t
-         | QualExpr.t
-         | StringLiteral.t
-         | TargetName.t
-         | UpdateAttributeRef.t ] )
-
-
 (** The translation of an expression can either be a simple expression with
  * Some instructions, in that case Exp is used. Or an If expression with an
  * expression being the one tested and true/false branches *)
@@ -271,7 +225,94 @@ let mk_load typ loc expr =
   map ~f expr
 
 
-let rec trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a =
+(* Type used to call mk_array_access to access a field of the array or an index 
+ * Use a GADT because when accessing an index, we need setup instructions *)
+type _ array_access =
+  | Index : Exp.t -> (Sil.instr list * Exp.t) array_access
+  | Data : Exp.t array_access
+  | First : Exp.t array_access
+  | Last : Exp.t array_access
+  | Length : Exp.t array_access
+
+let rec mk_array_access : type a. context -> Typ.t -> Location.t -> Exp.t -> a array_access -> a =
+ fun ctx array_typ loc prefix array_access ->
+  (* An array is translated to a record with fields for first, last and the data.
+   * This function should be use to access the fields of the record *)
+  let int_typ = Typ.(mk (Tint IInt)) in
+  match array_access with
+  | Index exp ->
+      let field = mk_array_access ctx array_typ loc prefix Data in
+      let load_instrs, load_exp = load array_typ loc field in
+      (load_instrs, Exp.Lindex (load_exp, exp))
+  | Data ->
+      let field_name = Typ.Fieldname.Ada.from_string "data" in
+      let lookup = Tenv.lookup ctx.tenv in
+      let typ = Typ.Struct.fld_typ ~lookup ~default:Typ.void field_name array_typ in
+      Exp.Lfield (prefix, field_name, typ)
+  | First ->
+      Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "first", int_typ)
+  | Last ->
+      Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "last", int_typ)
+  | Length ->
+      Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "length", int_typ)
+
+
+let rec trans_lvalue_ ctx dest =
+  match (dest :> lvalue) with
+  | `DottedName {f_prefix= (lazy prefix); f_suffix= (lazy suffix)} as name -> (
+    match record_field suffix with
+    | Some _ ->
+        let prefix_stmts, (prefix_instrs, prefix_expr) = trans_lvalue_ ctx prefix in
+        ( prefix_stmts
+        , ( prefix_instrs
+          , Exp.Lfield
+              ( prefix_expr
+              , field_name (Option.value_exn (AdaNode.p_xref name))
+              , type_of_expr ctx name ) ) )
+    | None ->
+        ([], ([], Exp.Lvar (pvar ctx name))) )
+  | `Identifier _ as name -> (
+      let typ = type_of_expr ctx name in
+      let defining_name = Option.value_exn (AdaNode.p_xref name) in
+      let dest_expr = Exp.Lvar (pvar ctx name) in
+      match DefiningNameMap.find_opt defining_name ctx.params_modes with
+      | Some Reference ->
+          let ptr_typ = Typ.(mk (Tptr (typ, Pk_reference))) in
+          ([], load ptr_typ (location ctx.source_file name) dest_expr)
+      | Some Copy | None ->
+          ([], ([], dest_expr)) )
+  | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
+      let stmts, (instrs, dest_expr) = trans_lvalue_ ctx prefix in
+      let load_instrs, load_expr =
+        load (type_of_expr ctx prefix) (location ctx.source_file dest) dest_expr
+      in
+      (stmts, (instrs @ load_instrs, load_expr))
+  | `CallExpr {f_name= (lazy name); f_suffix= (lazy (`AssocList {list= (lazy assoc_list)}))} ->
+      (* Since we are evaluating an lvalue, consider this as an access to an
+       * array. An array is compiled to a record with the field data being the
+       * real array. *)
+      let array_typ = type_of_expr ctx name in
+      let array_dest_stmts, (array_dest_instrs, array_dest) = trans_lvalue_ ctx name in
+      (* The destination of the array should be loaded to get it's base address *)
+      let index_dest_stmts, (index_dest_instrs, index_dest) =
+        match assoc_list with
+        | [`ParamAssoc {f_designator= (lazy None); f_r_expr= (lazy index_expr)}] ->
+            trans_expr_ ctx (Tmp "index") (index_expr :> Expr.t)
+        | _ ->
+            unimplemented "trans_lvalue for a CallExpr for assoc_list other than one ParamAssoc"
+      in
+      let array_access_instrs, array_access =
+        mk_array_access ctx array_typ (location ctx.source_file name) array_dest (Index index_dest)
+      in
+      ( array_dest_stmts @ index_dest_stmts
+      , (array_dest_instrs @ index_dest_instrs @ array_access_instrs, array_access) )
+  | `CallExpr {f_suffix= (lazy suffix)} ->
+      unimplemented "trans_lvalue for CallExpr with suffix %s" (AdaNode.short_image suffix)
+  | _ as expr ->
+      unimplemented "trans_lvalue for %s" (AdaNode.short_image expr)
+
+
+and trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a =
  fun ctx cont binop ->
   let lhs = BinOp.f_left binop in
   let rhs = BinOp.f_right binop in
@@ -411,16 +452,8 @@ and trans_call : type a.
               trans_expr_ ctx (Tmp "arg") (expr :> Expr.t)
           | Reference -> (
             match (expr :> Expr.t) with
-            | ( #AttributeRef.t
-              | #CallExpr.t
-              | #CharLiteral.t
-              | #DottedName.t
-              | #ExplicitDeref.t
-              | #Identifier.t
-              | #QualExpr.t
-              | #StringLiteral.t
-              | #TargetName.t ) as lvalue ->
-                ([], trans_dest ctx lvalue)
+            | #lvalue as lvalue ->
+                trans_lvalue_ ctx lvalue
             | _ ->
                 L.die InternalError "out parameter should be an lvalue" )
         in
@@ -658,15 +691,11 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
         trans_call ctx cont ident call_ref []
     | _ ->
         unimplemented "trans_expr for an identifier call %s" (AdaNode.short_image ident) )
-  | (#Identifier.t | #DottedName.t | #ExplicitDeref.t) as name ->
-      let stmts, dest = trans_dest ctx name in
-      let load_instrs, load_exp = load typ loc dest in
-      return ctx cont expr typ [] (of_exp (stmts @ load_instrs) load_exp)
   | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
   | `UpdateAttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
     when is_access attribute ->
-      let dest_instrs, dest = trans_dest ctx prefix in
-      return ctx cont expr typ [] (of_exp dest_instrs dest)
+      let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx prefix in
+      return ctx cont expr typ dest_stmts (of_exp dest_instrs dest)
   | `UnOp {f_op= (lazy op); f_expr= (lazy expr)} as unop -> (
     match Name.p_referenced_decl op with
     | Some ref ->
@@ -751,9 +780,15 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
         (mk_if cond_expr then_expr elsif_expr)
   | `ParenExpr {f_expr= (lazy expr)} ->
       trans_expr_ ctx cont (expr :> Expr.t)
+  | #lvalue as lvalue ->
+      let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx lvalue in
+      let load_instrs, load_exp = load typ loc dest in
+      return ctx cont expr typ dest_stmts (of_exp (dest_instrs @ load_instrs) load_exp)
   | _ as expr ->
       unimplemented "trans_expr for %s" (AdaNode.short_image expr)
 
+
+let trans_lvalue ctx dest = trans_lvalue_ ctx (dest :> lvalue)
 
 let trans_expr ctx cont expr = trans_expr_ ctx cont (expr :> Expr.t)
 

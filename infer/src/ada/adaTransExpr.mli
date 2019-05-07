@@ -9,19 +9,7 @@ open! IStd
 open Libadalang
 open AdaFrontend
 
-val trans_dest :
-     context
-  -> [< AttributeRef.t
-     | CallExpr.t
-     | CharLiteral.t
-     | DottedName.t
-     | ExplicitDeref.t
-     | Identifier.t
-     | QualExpr.t
-     | StringLiteral.t
-     | TargetName.t
-     | UpdateAttributeRef.t ]
-  -> Sil.instr list * Exp.t
+val trans_lvalue : context -> [< lvalue] -> stmt list * (Sil.instr list * Exp.t)
 
 (** The translation of an expression can either be a simple expression,
  * or an If expression with an conditional expression and expression for when the
@@ -42,6 +30,19 @@ val to_exp : simple_expr -> Sil.instr list * Exp.t
 
 val mk_not : Exp.t -> Exp.t
 (** Return the complement of the given expression, by simplifying it if possible *)
+
+(** Type used to call mk_array_access to access a field of the array or an index 
+ * Use a GADT because when accessing an index, we need setup instructions *)
+type _ array_access =
+  | Index : Exp.t -> (Sil.instr list * Exp.t) array_access
+  | Data : Exp.t array_access
+  | First : Exp.t array_access
+  | Last : Exp.t array_access
+  | Length : Exp.t array_access
+
+val mk_array_access : context -> Typ.t -> Location.t -> Exp.t -> 'a array_access -> 'a
+(** Compute the access to the desired field or index of the given lvalue assuming
+ * it is an array. *)
 
 (** A value of this type is passed to the translation of the expression. It says
  * what will be done with the translated expression.
