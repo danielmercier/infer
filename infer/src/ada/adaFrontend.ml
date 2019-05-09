@@ -285,6 +285,28 @@ let rec lvalue_type_expr lvalue =
 
 let lvalue_type_expr lvalue = lvalue_type_expr (lvalue :> lvalue)
 
+let rec is_array_type type_expr =
+  let rec is_array_type_decl base_type_decl =
+    match (base_type_decl :> AdaNode.t) with
+    | #TypeDecl.t as type_decl -> (
+      match TypeDecl.f_type_def type_decl with `ArrayTypeDef _ -> true | _ -> false )
+    | `SubtypeDecl {f_subtype= (lazy subtype)} ->
+        is_array_type (subtype :> TypeExpr.t)
+    | _ ->
+        false
+  in
+  match (type_expr :> TypeExpr.t) with
+  | #SubtypeIndication.t as subtype ->
+      SubtypeIndication.f_name subtype |> Name.p_referenced_decl >>| is_array_type_decl
+      |> Option.value ~default:false
+  | #AnonymousType.t as anon ->
+      is_array_type_decl (AnonymousType.f_type_decl anon)
+  | #EnumLitSynthTypeExpr.t ->
+      false
+
+
+let is_array_type type_expr = is_array_type (type_expr :> TypeExpr.t)
+
 let rec pp_stmt fmt stmt =
   match stmt with
   | Block {instrs} ->

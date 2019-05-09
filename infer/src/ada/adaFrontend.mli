@@ -161,4 +161,6 @@ val lvalue_type_expr : [< lvalue] -> TypeExpr.t
  * as a TypeExpr.
  * *)
 
+val is_array_type : [< TypeExpr.t] -> bool
+
 val pp : Format.formatter -> stmt list -> unit

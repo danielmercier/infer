@@ -70,7 +70,7 @@ val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a
 (** Translate an expression to an intermediate representation. *)
 
 val trans_bounds :
-  context -> [< Expr.t | DiscreteSubtypeIndication.t] -> stmt list * Sil.instr list * Exp.t * Exp.t
+  context -> [< Expr.t | SubtypeIndication.t] -> stmt list * Sil.instr list * Exp.t * Exp.t
 
 val trans_membership_expr :
      context
@@ -78,7 +78,7 @@ val trans_membership_expr :
   -> Typ.t
   -> Location.t
   -> expr
-  -> [< Expr.t | DiscreteSubtypeIndication.t] list
+  -> [< Expr.t | SubtypeIndication.t] list
   -> stmt list * 'a
 
 val trans_type_expr_constraint :

@@ -267,7 +267,7 @@ and trans_composite_stmt ctx composite_stmt =
             let choices =
               (* Filter all choices, to be of the desired typ *)
               let f = function
-                | (#Expr.t | #DiscreteSubtypeIndication.t) as expr ->
+                | (#Expr.t | #SubtypeIndication.t) as expr ->
                     expr
                 | _ as choice ->
                     L.die InternalError "Cannot generate membership expression for %s"
@@ -315,30 +315,79 @@ and trans_stmt ctx stmt =
       []
 
 
+and trans_array_decl ctx decl names array_type =
+  (* When an array is declared in Ada, there is an implicit allocation.
+   * Translate this to a malloc call *)
+  let typ = trans_type_expr ctx.tenv array_type in
+  let loc = location ctx.source_file decl in
+  let int_typ = Typ.(mk (Tint IInt)) in
+  let f id =
+    let pvar = pvar ctx id in
+    let length_field = mk_array_access ctx typ loc (Exp.Lvar pvar) Length in
+    let id = Ident.(create_fresh knormal) in
+    let load_length = Sil.Load (id, length_field, int_typ, loc) in
+    (* Call a malloc to allocate some space for the array.
+     * TODO: Instead of calling malloc, we should call our own builtin for array
+     *       declaration *)
+    let malloc_res = Ident.(create_fresh knormal) in
+    let allocate =
+      Sil.Call
+        ( (malloc_res, typ)
+        , Exp.Const (Const.Cfun BuiltinDecl.malloc)
+        , [(Exp.Var id, int_typ)]
+        , loc
+        , CallFlags.default )
+    in
+    let data_field = mk_array_access ctx typ loc (Exp.Lvar pvar) Data in
+    let store_malloc_result = Sil.Store (data_field, typ, Exp.Var malloc_res, loc) in
+    [load_length; allocate; store_malloc_result]
+  in
+  [Block {instrs= List.concat_map ~f names; loc; nodekind= Procdesc.Node.(Stmt_node DeclStmt)}]
+
+
 and trans_decl ctx decl =
   match (decl :> AdaNode.t) with
   | `ObjectDecl
       { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
       ; f_type_expr= (lazy type_expr)
-      ; f_default_expr= (lazy (Some default_expr)) }
+      ; f_default_expr= (lazy default_expr) }
   | `ExtendedReturnStmtObjectDecl
       { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
       ; f_type_expr= (lazy type_expr)
-      ; f_default_expr= (lazy (Some default_expr)) } ->
+      ; f_default_expr= (lazy default_expr) } ->
       let typ = trans_type_expr ctx.tenv type_expr in
       let loc = location ctx.source_file decl in
-      let assign_ids simple_expr =
-        let instrs, expr = to_exp simple_expr in
+      let type_constraint_stmts =
         let f id =
           let pvar = pvar ctx id in
-          Sil.Store (Lvar pvar, typ, expr, loc)
+          trans_type_expr_constraint ctx type_expr typ loc (of_exp [] (Exp.Lvar pvar))
         in
-        [ Block
-            {instrs= instrs @ List.map ~f names; loc; nodekind= Procdesc.Node.(Stmt_node DeclStmt)}
-        ]
+        List.concat_map ~f names
       in
-      let stmts, expr = trans_expr ctx Inline default_expr in
-      stmts @ map_to_stmts ~f:assign_ids ctx loc expr
+      let array_decl_stmts =
+        if is_array_type type_expr then trans_array_decl ctx decl names type_expr else []
+      in
+      let store_default_stmts =
+        (* Check if there is a default expression and store it if there is one *)
+        match default_expr with
+        | Some default_expr ->
+            let assign_ids simple_expr =
+              let instrs, expr = to_exp simple_expr in
+              let f id =
+                let pvar = pvar ctx id in
+                Sil.Store (Lvar pvar, typ, expr, loc)
+              in
+              [ Block
+                  { instrs= instrs @ List.map ~f names
+                  ; loc
+                  ; nodekind= Procdesc.Node.(Stmt_node DeclStmt) } ]
+            in
+            let stmts, expr = trans_expr ctx Inline default_expr in
+            stmts @ map_to_stmts ~f:assign_ids ctx loc expr
+        | None ->
+            []
+      in
+      type_constraint_stmts @ array_decl_stmts @ store_default_stmts
   | _ ->
       []
 
