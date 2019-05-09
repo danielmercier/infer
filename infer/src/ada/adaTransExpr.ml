@@ -107,13 +107,12 @@ let rec map ~f expr_result =
 
 
 (** transform an expression to a list of statements by calling f on the leafs *)
-let rec map_to_stmts ~f ~orig_node ctx expr_result =
+let rec map_to_stmts ~f ctx loc expr_result =
   let rec aux expr_result =
     match expr_result with
     | SimpleExpr simple_expr ->
         f simple_expr
     | If (instrs, exp, (true_b, false_b)) ->
-        let loc = location ctx.source_file orig_node in
         let prune_true = Sil.(Prune (exp, loc, true, Ik_land_lor)) in
         let prune_false = Sil.(Prune (mk_not exp, loc, false, Ik_land_lor)) in
         let true_nodekind =
@@ -140,20 +139,19 @@ let rec map_to_stmts ~f ~orig_node ctx expr_result =
  *       pruned to true/false.
  *    - Tmp/Inline: simply return the given stmts/instructions and expression *)
 let return : type a.
-    context -> a continuation -> [< AdaNode.t] -> Typ.t -> stmt list -> expr -> stmt list * a =
- fun ctx cont orig_node typ stmts expr ->
-  let loc = location ctx.source_file orig_node in
+    context -> a continuation -> Typ.t -> Location.t -> stmt list -> expr -> stmt list * a =
+ fun ctx cont typ loc stmts expr ->
   match cont with
   | Goto (jump_true, jump_false) ->
       let rec f = function
         | Exp (instrs, exp) ->
             (* In this case we create a if expression with one branch where the
            * expression is true, and false in the other branch *)
-            map_to_stmts ~f ~orig_node ctx (If (instrs, exp, (of_bool true, of_bool false)))
+            map_to_stmts ~f ctx loc (If (instrs, exp, (of_bool true, of_bool false)))
         | Bool b ->
             [Jump (loc, if b then jump_true else jump_false)]
       in
-      (stmts @ map_to_stmts ~f ~orig_node ctx expr, ())
+      (stmts @ map_to_stmts ~f ctx loc expr, ())
   | Tmp name -> (
     match expr with
     | SimpleExpr simple_expr ->
@@ -171,7 +169,7 @@ let return : type a.
         in
         let id = Ident.(create_fresh knormal) in
         let load = Sil.Load (id, Exp.Lvar tmp_var, typ, loc) in
-        (stmts @ map_to_stmts ~f ~orig_node ctx expr, ([load], Exp.Var id)) )
+        (stmts @ map_to_stmts ~f ctx loc expr, ([load], Exp.Var id)) )
   | Inline ->
       (stmts, expr)
 
@@ -359,26 +357,29 @@ and trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a 
     | _ as op ->
         unimplemented "BinOp op for %s" (AdaNode.short_image op)
   in
-  return ctx cont binop (type_of_expr ctx binop) (lhs_stmts @ rhs_stmts) inlined_result
+  let typ = type_of_expr ctx binop in
+  let loc = location ctx.source_file binop in
+  return ctx cont typ loc (lhs_stmts @ rhs_stmts) inlined_result
 
 
 and trans_unop : type a. context -> a continuation -> UnOp.t -> stmt list * a =
  fun ctx cont unop ->
   let typ = type_of_expr ctx unop in
+  let loc = location ctx.source_file unop in
   let op = UnOp.f_op unop in
   let stmts, expr = trans_expr_ ctx Inline (UnOp.f_expr unop :> Expr.t) in
   match op with
   | `OpPlus _ ->
-      return ctx cont unop typ stmts expr
+      return ctx cont typ loc stmts expr
   | `OpMinus _ ->
-      return ctx cont unop typ stmts
+      return ctx cont typ loc stmts
         (map
            ~f:(fun simple_expr ->
              let instrs, exp = to_exp simple_expr in
              of_exp instrs (Exp.UnOp (Unop.Neg, exp, Some typ)) )
            expr)
   | `OpNot _ ->
-      return ctx cont unop typ stmts
+      return ctx cont typ loc stmts
         (map
            ~f:(function
              | Bool b ->
@@ -390,7 +391,7 @@ and trans_unop : type a. context -> a continuation -> UnOp.t -> stmt list * a =
       (* Translate a call to abs to an if expression,
        * abs x is
        *    if 0 <= x then x else -x *)
-      return ctx cont unop typ stmts
+      return ctx cont typ loc stmts
         (map
            ~f:(fun simple_expr ->
              let instrs, exp = to_exp simple_expr in
@@ -402,8 +403,8 @@ and trans_unop : type a. context -> a continuation -> UnOp.t -> stmt list * a =
 
 
 and trans_enum_literal : type a.
-    context -> a continuation -> Typ.t -> EnumLiteralDecl.t -> stmt list * a =
- fun ctx cont typ enum_lit ->
+    context -> a continuation -> Typ.t -> Location.t -> EnumLiteralDecl.t -> stmt list * a =
+ fun ctx cont typ loc enum_lit ->
   (* Here we translate an enum literal to an integer. But we don't care about the
    * representation. This means that the returned integer is not equivalent to
    * calling 'Pos in Ada *)
@@ -420,7 +421,7 @@ and trans_enum_literal : type a.
       let result = List.findi ~f:(fun _ lit -> EnumLiteralDecl.equal enum_lit lit) enum_literals in
       match result with
       | Some (pos, _) ->
-          return ctx cont enum_lit typ [] (of_exp [] (Exp.Const (Const.Cint (IntLit.of_int pos))))
+          return ctx cont typ loc [] (of_exp [] (Exp.Const (Const.Cint (IntLit.of_int pos))))
       | None ->
           L.die InternalError "Cannot find the enum literal %s for type %s"
             (AdaNode.short_image enum_lit) (AdaNode.short_image enum_typ) )
@@ -436,14 +437,14 @@ and trans_call : type a.
     -> (param_mode * [< Expr.t]) list
     -> stmt list * a =
  fun ctx cont call call_ref args ->
+  let loc = location ctx.source_file call in
+  let typ = type_of_expr ctx call in
   match call_ref with
   | #EnumLiteralDecl.t as enum_lit ->
       (* An enum literal is a call in Ada *)
-      trans_enum_literal ctx cont (type_of_expr ctx call) enum_lit
+      trans_enum_literal ctx cont typ loc enum_lit
   | #BaseSubpBody.t as subp ->
       (* For a call to a subprogram, we generate the Sil instruction *)
-      let loc = location ctx.source_file call in
-      let typ = type_of_expr ctx call in
       let proc_name = get_proc_name subp in
       let f (stmts, instrs, args) (mode, expr) =
         let arg_stmts, (arg_instrs, arg_expr) =
@@ -471,7 +472,7 @@ and trans_call : type a.
       let sil_call =
         Sil.Call ((id, typ), Exp.Const (Const.Cfun proc_name), args, loc, CallFlags.default)
       in
-      return ctx cont call typ stmts (of_exp (instrs @ [sil_call]) (Exp.Var id))
+      return ctx cont typ loc stmts (of_exp (instrs @ [sil_call]) (Exp.Var id))
   | _ ->
       unimplemented "trans_call for %s" (AdaNode.short_image call_ref)
 
@@ -528,7 +529,7 @@ and trans_range_constraint ctx lal_range typ loc expr =
             ; loc
             ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
       in
-      bounds_stmts @ map_to_stmts ~f:bounds_constraint ~orig_node:lal_range ctx expr
+      bounds_stmts @ map_to_stmts ~f:bounds_constraint ctx loc expr
 
 
 (** Translate a constraint on discriminants to prune nodes on the given expressions.
@@ -557,9 +558,7 @@ and trans_discriminant_constraint ctx lal_discr typ loc expr =
           ; loc
           ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
     in
-    actual_stmts
-    @ ( combine ~f:mk_equal expr actual_expr
-      |> map_to_stmts ~f:mk_prune_node ~orig_node:lal_discr ctx )
+    actual_stmts @ (combine ~f:mk_equal expr actual_expr |> map_to_stmts ~f:mk_prune_node ctx loc)
   in
   List.map ~f:constrain_discriminant params_actual |> List.concat
 
@@ -617,7 +616,7 @@ and trans_enum_type_constraint ctx enum_type typ loc expr =
         ; loc
         ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
   in
-  map_to_stmts ~f:mk_comp ~orig_node:enum_type ctx expr
+  map_to_stmts ~f:mk_comp ctx loc expr
 
 
 (** Generate the constraints to apply on expr for any type.
@@ -638,12 +637,12 @@ and trans_type_constraint ctx lal_typ typ loc expr =
 and trans_membership_expr_ : type a.
        context
     -> a continuation
-    -> AdaNode.t
     -> Typ.t
+    -> Location.t
     -> expr
     -> [Expr.t | DiscreteSubtypeIndication.t] list
     -> stmt list * a =
- fun ctx cont orig_node typ expr alternatives ->
+ fun ctx cont typ loc expr alternatives ->
   let trans_alternative alt =
     let choice_stmts, choice_instrs, low_bound, high_bound =
       trans_bounds_ ctx (alt :> [Expr.t | DiscreteSubtypeIndication.t])
@@ -664,7 +663,7 @@ and trans_membership_expr_ : type a.
   in
   (* For each choice of the list, make an or expression of all comparisons *)
   let final_stmts, final_expr = List.fold_left ~f ~init:([], of_bool false) alternatives in
-  return ctx cont orig_node typ final_stmts final_expr
+  return ctx cont typ loc final_stmts final_expr
 
 
 and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
@@ -672,7 +671,7 @@ and trans_expr_ : type a. context -> a continuation -> Expr.t -> stmt list * a =
   try
     (* We try first to evaluate the expression as an integer before calling the
      * more general translation of expressions *)
-    return ctx cont expr (type_of_expr ctx expr) []
+    return ctx cont (type_of_expr ctx expr) (location ctx.source_file expr) []
       (of_exp [] (Exp.int (IntLit.of_int (Expr.p_eval_as_int expr))))
   with _ -> trans_any_expr_ ctx cont expr
 
@@ -684,7 +683,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
   match (expr :> Expr.t) with
   | #IntLiteral.t as int_literal ->
       let value = IntLiteral.p_denoted_value int_literal in
-      return ctx cont expr typ [] (of_exp [] (Exp.Const (Const.Cint (IntLit.of_int value))))
+      return ctx cont typ loc [] (of_exp [] (Exp.Const (Const.Cint (IntLit.of_int value))))
   | (#Identifier.t | #DottedName.t) as ident when Name.p_is_call ident -> (
     match Name.p_referenced_decl ident with
     | Some call_ref ->
@@ -695,7 +694,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
   | `UpdateAttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
     when is_access attribute ->
       let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx prefix in
-      return ctx cont expr typ dest_stmts (of_exp dest_instrs dest)
+      return ctx cont typ loc dest_stmts (of_exp dest_instrs dest)
   | `UnOp {f_op= (lazy op); f_expr= (lazy expr)} as unop -> (
     match Name.p_referenced_decl op with
     | Some ref ->
@@ -735,9 +734,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       let typ = type_of_expr ctx expr in
       let tested_stmts, tested_expr = trans_expr_ ctx Inline (expr :> Expr.t) in
       let membership_stmts, membership_expr =
-        trans_membership_expr_ ctx Inline
-          (expr :> AdaNode.t)
-          typ tested_expr
+        trans_membership_expr_ ctx Inline typ loc tested_expr
           (alternatives :> [Expr.t | DiscreteSubtypeIndication.t] list)
       in
       let inlined_expr =
@@ -754,7 +751,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
             in
             map ~f membership_expr
       in
-      return ctx cont expr typ (tested_stmts @ membership_stmts) inlined_expr
+      return ctx cont typ loc (tested_stmts @ membership_stmts) inlined_expr
   | `IfExpr
       { f_cond_expr= (lazy cond_expr)
       ; f_then_expr= (lazy then_expr)
@@ -775,7 +772,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       let elsif_stmts, elsif_expr =
         List.fold_right ~f ~init:(else_stmts, else_expr) alternatives
       in
-      return ctx cont expr typ
+      return ctx cont typ loc
         (cond_stmts @ then_stmts @ elsif_stmts)
         (mk_if cond_expr then_expr elsif_expr)
   | `ParenExpr {f_expr= (lazy expr)} ->
@@ -783,7 +780,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
   | #lvalue as lvalue ->
       let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx lvalue in
       let load_instrs, load_exp = load typ loc dest in
-      return ctx cont expr typ dest_stmts (of_exp (dest_instrs @ load_instrs) load_exp)
+      return ctx cont typ loc dest_stmts (of_exp (dest_instrs @ load_instrs) load_exp)
   | _ as expr ->
       unimplemented "trans_expr for %s" (AdaNode.short_image expr)
 
@@ -796,10 +793,8 @@ let trans_bounds ctx bounds_expr =
   trans_bounds_ ctx (bounds_expr :> [Expr.t | DiscreteSubtypeIndication.t])
 
 
-let trans_membership_expr ctx cont orig_node typ expr alternatives =
-  trans_membership_expr_ ctx cont
-    (orig_node :> AdaNode.t)
-    typ expr
+let trans_membership_expr ctx cont typ loc expr alternatives =
+  trans_membership_expr_ ctx cont typ loc expr
     (alternatives :> [Expr.t | DiscreteSubtypeIndication.t] list)
 
 

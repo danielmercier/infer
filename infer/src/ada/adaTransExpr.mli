@@ -63,8 +63,7 @@ type _ continuation =
   | Tmp : string -> (Sil.instr list * Exp.t) continuation
   | Inline : expr continuation
 
-val map_to_stmts :
-  f:(simple_expr -> stmt list) -> orig_node:[< AdaNode.t] -> context -> expr -> stmt list
+val map_to_stmts : f:(simple_expr -> stmt list) -> context -> Location.t -> expr -> stmt list
 (** transform an expression to a list of statements by calling f on the leafs *)
 
 val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a
@@ -76,8 +75,8 @@ val trans_bounds :
 val trans_membership_expr :
      context
   -> 'a continuation
-  -> [< AdaNode.t]
   -> Typ.t
+  -> Location.t
   -> expr
   -> [< Expr.t | DiscreteSubtypeIndication.t] list
   -> stmt list * 'a

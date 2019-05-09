@@ -24,7 +24,7 @@ let trans_assignment ctx orig_node lal_type_expr dest_instrs dest_expr expr =
     let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
     [Block {instrs; loc; nodekind}]
   in
-  map_to_stmts ~f ~orig_node ctx expr
+  map_to_stmts ~f ctx loc expr
 
 
 let trans_simple_stmt ctx simple_stmt =
@@ -279,7 +279,7 @@ and trans_composite_stmt ctx composite_stmt =
             let choices_stmts, () =
               trans_membership_expr ctx
                 (Goto (Next, Label next_case_label))
-                composite_stmt typ (of_exp instrs exp) choices
+                typ loc (of_exp instrs exp) choices
             in
             choices_stmts @ case_stmts
             @ [Jump (loc, Label end_case_label)]
@@ -338,7 +338,7 @@ and trans_decl ctx decl =
         ]
       in
       let stmts, expr = trans_expr ctx Inline default_expr in
-      stmts @ map_to_stmts ~f:assign_ids ~orig_node:decl ctx expr
+      stmts @ map_to_stmts ~f:assign_ids ctx loc expr
   | _ ->
       []
 
