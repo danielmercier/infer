@@ -7,6 +7,7 @@
 
 open! IStd
 open Libadalang
+open LalUtils
 open AdaFrontend
 open AdaTransType
 open Option.Monad_infix

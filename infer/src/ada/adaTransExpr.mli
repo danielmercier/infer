@@ -7,6 +7,7 @@
 
 open! IStd
 open Libadalang
+open LalUtils
 open AdaFrontend
 
 val trans_lvalue : context -> [< lvalue] -> stmt list * (Sil.instr list * Exp.t)
