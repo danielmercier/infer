@@ -8,6 +8,10 @@
 open! IStd
 open Libadalang
 
+(** This module contains some utility types and functions related to our use
+ * of libadalang. Note that some of them should be implemented as
+ * properties in the future. *)
+
 (* Type for values that can represent addresses *)
 type lvalue =
   [ AttributeRef.t

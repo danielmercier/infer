@@ -27,6 +27,8 @@ let is_access attribute = String.equal (String.lowercase (AdaNode.text attribute
 let rec lvalue_type_expr lvalue =
   let element_type type_expr (element_type : [< TypeDef.t] -> TypeExpr.t) =
     let aux base_type_decl =
+      (* This function calls element_type on the type definition of the base type
+       * declaration *)
       match (base_type_decl :> BaseTypeDecl.t) with
       | #TypeDecl.t as type_decl ->
           element_type (TypeDecl.f_type_def type_decl)
@@ -37,6 +39,7 @@ let rec lvalue_type_expr lvalue =
     | #AnonymousType.t as anon ->
         aux (AnonymousType.f_type_decl anon :> BaseTypeDecl.t)
     | #SubtypeIndication.t as subtype_indication -> (
+      (* For a subtype, we look at it's base type *)
       match SubtypeIndication.f_name subtype_indication |> Name.p_referenced_decl with
       | Some (#BaseTypeDecl.t as type_decl) ->
           aux type_decl

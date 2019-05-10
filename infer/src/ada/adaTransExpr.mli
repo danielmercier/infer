@@ -10,12 +10,30 @@ open Libadalang
 open LalUtils
 open AdaFrontend
 
+(** Entry point for the translation of expressions into infer ir statements
+ * and expressions.
+ *
+ * Epressions can make some control flow,
+ *
+ * For example A and then B
+ *
+ * Thus, we need to use an intermediate representation (see expr type) to
+ * represent expressions.
+ *
+ * This module also uses a structured continuation to be able to say what we
+ * want to do with the translation of some expression (see continuation type) *)
+
 val trans_lvalue : context -> [< lvalue] -> stmt list * (Sil.instr list * Exp.t)
+(** An lvalue is an expression that have some location in the memory. Translate
+ * on of those to an expression symbolically representing this location. *)
 
 (** The translation of an expression can either be a simple expression,
  * or an If expression with an conditional expression and expression for when the
  * condition is true, of false. A simple expression is either an infer Exp, or
- * a Boolean insterted by the frontend *)
+ * a Boolean insterted by the frontend
+ *
+ * We make this distinction of boolean inserted by the frontend because we don't
+ * want to create dead blocks when translating an expression. *)
 type simple_expr = Exp of Sil.instr list * Exp.t | Bool of bool
 
 type expr = SimpleExpr of simple_expr | If of Sil.instr list * Exp.t * (expr * expr)
@@ -72,6 +90,16 @@ val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a
 
 val trans_bounds :
   context -> [< Expr.t | SubtypeIndication.t] -> stmt list * Sil.instr list * Exp.t * Exp.t
+(** Translate either a subtype indication of a scalar type, or an expression into
+ * a pair of expressions that represent the first and the last value of this expression.
+ *
+ * An example of expression is:
+ * 1 .. 10
+ * this will return the pair 1, 10
+ *
+ * A subtype indication is for example:
+ * Integer range 15 .. 20
+ * in that case it will return 15, 20 *)
 
 val trans_membership_expr :
      context
@@ -81,6 +109,13 @@ val trans_membership_expr :
   -> expr
   -> [< Expr.t | SubtypeIndication.t] list
   -> stmt list * 'a
+(** A membership expression is of the form:
+  * X in A | B | C,
+  *
+  * this function translates this expression by taking the list of
+  * [A; B; C]
+  *
+  * This is translated by calling trans_bounds on each element of this list *)
 
 val trans_type_expr_constraint :
   context -> [< TypeExpr.t] -> Typ.t -> Location.t -> expr -> stmt list
@@ -88,3 +123,4 @@ val trans_type_expr_constraint :
  * prune statements. expr should be an lvalue *)
 
 val type_of_expr : context -> [< Expr.t] -> Typ.t
+(** Compute the type of the given lal expression *)

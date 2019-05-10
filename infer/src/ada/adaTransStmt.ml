@@ -28,6 +28,7 @@ let trans_assignment ctx orig_node lal_type_expr dest_instrs dest_expr expr =
   map_to_stmts ~f loc expr
 
 
+(** Translate the libadalang statements called "SimpleStmt" *)
 let trans_simple_stmt ctx simple_stmt =
   let loc = location ctx.source_file simple_stmt in
   match (simple_stmt :> SimpleStmt.t) with
@@ -86,6 +87,8 @@ let trans_simple_stmt ctx simple_stmt =
       unimplemented "trans_simple_stmt for %s" (AdaNode.short_image simple_stmt)
 
 
+(** Given an expression for the guard and statements for the then branch and
+ * the else branch, construct an if statement *)
 let rec trans_if_stmt ctx orig_stmt cond_expr then_stmts else_stmts =
   let loc = location ctx.source_file orig_stmt in
   let false_label = mk_label () in
@@ -96,8 +99,29 @@ let rec trans_if_stmt ctx orig_stmt cond_expr then_stmts else_stmts =
   stmts_expr @ true_block @ false_block @ [Label (loc, end_label)]
 
 
+(** Translate a for loop to a list of statements.
+ * We translate a for loop by setting the initial value of the loop variable
+ * and incrementing it by one at each iteration.
+ *
+ * Note that in case of static predicates, the behaviour is wrong since
+ * you can have the type:
+ * type Number is (One, Two, Three);
+ *
+ * and the subtype:
+ * subtype OneThree is Number with Predicate => OneThree /= Two.
+ *
+ * In which case doing:
+ * for E in OneThree
+ *
+ * Should iterate on One and Three but not Two.
+ *
+ * One solution for this problem would be to add at the beginning of the loop:
+ * if Predicate (E) then
+ *    ...
+ * end if
+ *
+ * *)
 and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
-  (* Translate a for loop to a list of statements *)
   match (for_loop_spec :> ForLoopSpec.t) with
   | `ForLoopSpec
       { f_iter_expr= (lazy iter_expr)
@@ -135,6 +159,7 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
       in
       let loc = location ctx.source_file composite_stmt in
       let end_loc = end_location ctx.source_file composite_stmt in
+      (* block to enter inside the loop *)
       let prune_true_block =
         Block
           { instrs= bounds_instrs @ [load_loop_var; Sil.Prune (comparison, loc, true, Sil.Ik_for)]
@@ -143,6 +168,7 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
               Procdesc.Node.Prune_node (true, Sil.Ik_for, Procdesc.Node.PruneNodeKind_TrueBranch)
           }
       in
+      (* block to exit the loop *)
       let prune_false_block =
         Block
           { instrs=
@@ -152,6 +178,7 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
               Procdesc.Node.Prune_node (false, Sil.Ik_for, Procdesc.Node.PruneNodeKind_FalseBranch)
           }
       in
+      (* The assignment of the loop variable to the first (or last) value *)
       let pre_loop_assignment =
         let rhs = if has_reverse then high_bound else low_bound in
         Block
@@ -159,8 +186,11 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
           ; loc
           ; nodekind= Procdesc.Node.(Stmt_node (Call "assign")) }
       in
+      (* The incremente (or decrement) of the loop variable *)
       let in_loop_assignment =
-        let op = if has_reverse then Binop.MinusA None else Binop.PlusA None in
+        let op =
+          if has_reverse then Binop.MinusA (Some Typ.IInt) else Binop.PlusA (Some Typ.IInt)
+        in
         let rhs = Exp.BinOp (op, Exp.Var id, Exp.one) in
         Block
           { instrs= [load_loop_var; Sil.Store (Exp.Lvar loop_var, typ, rhs, loc)]
@@ -180,12 +210,16 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
       unimplemented "for X of ..."
 
 
+(** Translate the libadalang statements called "CompositeStmt" *)
 and trans_composite_stmt ctx composite_stmt =
   match (composite_stmt :> CompositeStmt.t) with
   | #BaseLoopStmt.t as loop_stmt -> (
       let loc = location ctx.source_file composite_stmt in
       let end_loop = mk_label () in
       let new_ctx =
+        (* Insert the loop that we are in and the name of the exit label for
+         * this loop in a new context that should be passed to translate
+         * the core loop statements *)
         match BaseLoopStmt.f_end_name loop_stmt >>= AdaNode.p_xref with
         | Some node ->
             { ctx with
@@ -197,19 +231,31 @@ and trans_composite_stmt ctx composite_stmt =
       let loop_stmts = trans_stmts new_ctx (BaseLoopStmt.f_stmts loop_stmt) in
       match BaseLoopStmt.f_spec loop_stmt with
       | Some (`ForLoopSpec _ as for_loop_spec) ->
+          (* Call the previous defined function to translate a for loop *)
           trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts
       | Some (`WhileLoopSpec {f_expr= (lazy expr)}) ->
+          (* For a while loop we translate the condition expression by either
+           * going to the next instruction which is the core of the loop, or
+           * the end of the loop *)
           let stmts, () = trans_expr ctx (Goto (Next, Label end_loop)) expr in
           [LoopStmt (loc, stmts @ loop_stmts, end_loop)]
       | None ->
+          (* No condition to exit the loop *)
           [LoopStmt (loc, loop_stmts, end_loop)] )
   | `NamedStmt {f_stmt= (lazy stmt)} ->
+      (* A named statement is a statement with a name. We don't care about it's
+       * name *)
       trans_stmt ctx (stmt :> Stmt.t)
   | `IfStmt
       { IfStmtType.f_cond_expr= (lazy cond_expr)
       ; f_then_stmts= (lazy then_stmts)
       ; f_alternatives= (lazy (`ElsifStmtPartList {list= (lazy alternatives)}))
       ; f_else_stmts= (lazy else_stmts) } ->
+      (** An if statement in Ada have some alternatives, but translate this like
+       * if A then S1 elsif B then S2 else S3
+       * to:
+       *  if A then S1 else {if B then S2 else S3}
+       *)
       let rec aux = function
         | alternative :: q ->
             let alt_cond_expr = ElsifStmtPart.f_cond_expr alternative in
@@ -223,8 +269,10 @@ and trans_composite_stmt ctx composite_stmt =
       trans_if_stmt ctx (composite_stmt :> AdaNode.t) cond_expr trans_then_stmts (aux alternatives)
   | (`BeginBlock {f_stmts= (lazy handled_stmts)} | `DeclBlock {f_stmts= (lazy handled_stmts)}) as
     block_stmt ->
+      (** We translate the statements inside the block *)
       let stmts = trans_stmts ctx (HandledStmts.f_stmts handled_stmts) in
       let decl_stmts =
+        (* If the block is a declarative block, we need to translate the declarations *)
         match block_stmt with
         | `DeclBlock {f_decls= (lazy decl_part)} ->
             trans_decls ctx decl_part
@@ -233,6 +281,14 @@ and trans_composite_stmt ctx composite_stmt =
       in
       decl_stmts @ stmts
   | `ExtendedReturnStmt {f_decl= (lazy decl); f_stmts= (lazy handled_stmts)} ->
+      (** An extended return statement is a statement that defines a variable
+       * that will then be returned.
+       *
+       * This is translated by adding in the subst map inside the context, the
+       * fact that the defined variable is the return variable.
+       *
+       * Infer IR does not define a return statement, but instead, there is a
+       * variable called return that is actually the returned variable *)
       let return_var = Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc) in
       let f acc name = {acc with subst= DefiningNameMap.add name return_var acc.subst} in
       let new_ctx =
@@ -248,6 +304,17 @@ and trans_composite_stmt ctx composite_stmt =
   | `CaseStmt
       { f_expr= (lazy expr)
       ; f_alternatives= (lazy (`CaseStmtAlternativeList {list= (lazy alternatives)})) } ->
+      (** A case statement is translated into a succession of if statements.
+       *
+       * case X when A => S1 when B => S2 when others => S3
+       *
+       * is translated to:
+       *
+       * if X in A then S1 else {if X in B then S2 else S3}
+       *
+       * We use the translation of membership expression to translate the
+       * conditions of the if statements
+       * *)
       let loc = location ctx.source_file composite_stmt in
       let typ = type_of_expr ctx expr in
       let end_case_label = mk_label () in

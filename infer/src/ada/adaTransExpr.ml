@@ -13,6 +13,8 @@ open AdaTransType
 open Option.Monad_infix
 module L = Logging
 
+(** Return an expression equivalent to "not exp" but try to simplify it if
+  * possible *)
 let rec mk_not exp =
   let open Exp in
   match exp with
@@ -42,6 +44,7 @@ let rec mk_not exp =
       UnOp (Unop.LNot, exp, Some Typ.(mk (Tint IBool)))
 
 
+(** Compute the type of the given lal expression *)
 let type_of_expr ctx expr =
   match Expr.p_expression_type expr with
   | Some typ ->
@@ -51,6 +54,7 @@ let type_of_expr ctx expr =
       Typ.void
 
 
+(** If the given name is a name of a record field, return this field *)
 let record_field name =
   match Name.p_referenced_decl name with
   | Some ((#ComponentDecl.t | #DiscriminantSpec.t) as field) ->
@@ -175,9 +179,9 @@ let return : type a.
       (stmts, expr)
 
 
+(** To combine two expressions lhs and rhs, we append the rhs expression to
+ * all the lhs leafs and we call f with the actual instructions and expressions *)
 let combine ~f lhs_expr rhs_expr =
-  (* To combine two expressions lhs and rhs, we append the rhs expression to
-   * all the lhs leafs and we call f with the actual instructions and expressions *)
   let aux lhs_simple_expr =
     let lhs_instrs, lhs_exp = to_exp lhs_simple_expr in
     let call_f rhs_simple_expr =
@@ -190,10 +194,10 @@ let combine ~f lhs_expr rhs_expr =
   map ~f:aux lhs_expr
 
 
+(** Create an if expression by going to the leafs of the condition expression
+ * and create an If there with then_expr as the then branch and else_expr as
+ * then else branch *)
 let mk_if cond_expr then_expr else_expr =
-  (* Create an if expression by going to the leafs of the condition expression
-   * and create an If there with then_expr as the then branch and else_expr as
-   * then else branch *)
   let f = function
     | Bool true ->
         then_expr
@@ -205,16 +209,13 @@ let mk_if cond_expr then_expr else_expr =
   map ~f cond_expr
 
 
-let mk_or lhs_expr rhs_expr =
-  (* Make a shortcircuit or from the two given expressions *)
-  mk_if lhs_expr (of_bool true) rhs_expr
+(** Make a shortcircuit or from the two given expressions *)
+let mk_or lhs_expr rhs_expr = mk_if lhs_expr (of_bool true) rhs_expr
 
+(** Make a shortcircuit and from the two given expressions *)
+let mk_and lhs_expr rhs_expr = mk_if lhs_expr rhs_expr (of_bool false)
 
-let mk_and lhs_expr rhs_expr =
-  (* Make a shortcircuit and from the two given expressions *)
-  mk_if lhs_expr rhs_expr (of_bool false)
-
-
+(** Given an expression, load it and return the loaded expression *)
 let mk_load typ loc expr =
   let f simple_expr =
     let instrs, exp = to_exp simple_expr in
@@ -233,10 +234,10 @@ type _ array_access =
   | Last : Exp.t array_access
   | Length : Exp.t array_access
 
+(** An array is translated to a record with fields for first, last, length and
+ * the data. This function should be use to access the fields of the record *)
 let rec mk_array_access : type a. context -> Typ.t -> Location.t -> Exp.t -> a array_access -> a =
  fun ctx array_typ loc prefix array_access ->
-  (* An array is translated to a record with fields for first, last and the data.
-   * This function should be use to access the fields of the record *)
   let int_typ = Typ.(mk (Tint IInt)) in
   let data_field_name = Typ.Fieldname.Ada.from_string "data" in
   let real_array_typ =
@@ -258,6 +259,8 @@ let rec mk_array_access : type a. context -> Typ.t -> Location.t -> Exp.t -> a a
       Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "length", int_typ)
 
 
+(** An lvalue is an expression that have some location in the memory. Translate
+ * on of those to an expression symbolically representing this location. *)
 let rec trans_lvalue_ ctx dest =
   match (dest :> lvalue) with
   | `DottedName {f_prefix= (lazy prefix); f_suffix= (lazy suffix)} as name -> (
@@ -313,6 +316,7 @@ let rec trans_lvalue_ ctx dest =
       unimplemented "trans_lvalue for %s" (AdaNode.short_image expr)
 
 
+(** Translate binop operations into the Sil corresponding expression *)
 and trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a =
  fun ctx cont binop ->
   let lhs = BinOp.f_left binop in
@@ -365,6 +369,7 @@ and trans_binop : type a. context -> a continuation -> BinOp.t -> stmt list * a 
   return ctx cont typ loc (lhs_stmts @ rhs_stmts) inlined_result
 
 
+(** Translate unary operations into the Sil corresponding expression *)
 and trans_unop : type a. context -> a continuation -> UnOp.t -> stmt list * a =
  fun ctx cont unop ->
   let typ = type_of_expr ctx unop in
@@ -405,12 +410,12 @@ and trans_unop : type a. context -> a continuation -> UnOp.t -> stmt list * a =
            expr)
 
 
+(** Translate an enum literal to an integer. But we don't care about the
+ * representation. This means that the returned integer is not equivalent to
+ * calling 'Pos in Ada *)
 and trans_enum_literal : type a.
     context -> a continuation -> Typ.t -> Location.t -> EnumLiteralDecl.t -> stmt list * a =
  fun ctx cont typ loc enum_lit ->
-  (* Here we translate an enum literal to an integer. But we don't care about the
-   * representation. This means that the returned integer is not equivalent to
-   * calling 'Pos in Ada *)
   let enum_typ =
     match EnumLiteralDecl.p_enum_type enum_lit with
     | Some typ ->
@@ -432,10 +437,11 @@ and trans_enum_literal : type a.
       L.die InternalError "TypeDecl for %s should be an EnumTypeDef" (AdaNode.short_image enum_typ)
 
 
+(** Translate an Ada call into some stmts *)
 and trans_call : type a.
        context
     -> a continuation
-    -> [< AdaNode.t]
+    -> [< Expr.t]
     -> [< BasicDecl.t]
     -> (param_mode * [< Expr.t]) list
     -> stmt list * a =

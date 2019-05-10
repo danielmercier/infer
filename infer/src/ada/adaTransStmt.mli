@@ -9,6 +9,12 @@ open! IStd
 open Libadalang
 open AdaFrontend
 
+(** Entry point for the translation of statements into our intermediate
+ * representation.
+ *
+ * This module uses functions inside the adaTransExpr module to translate
+ * expression and make statements out of them *)
+
 val trans_stmts : context -> StmtList.t -> stmt list
 (** translate a list of libadalang statements to a list of the intermediate CFG
  * representation *)

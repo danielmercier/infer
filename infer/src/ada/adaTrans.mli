@@ -8,5 +8,8 @@
 open! IStd
 open Libadalang
 
+(* Entry point for the translation of a list of files. This module translates
+ * the subprograms by calling the right functions in adaTransStmt *)
+
 val translate : AnalysisContext.t -> string list -> unit
 (** translate the given list of files to infer IR *)

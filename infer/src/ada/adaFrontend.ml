@@ -89,6 +89,7 @@ let mk_context cfg tenv source_file proc_desc params_modes ret_type =
   ; subst= DefiningNameMap.empty }
 
 
+(** Creates a new, fresh label *)
 let mk_label =
   let lbl = ref 0 in
   fun () ->
@@ -96,6 +97,9 @@ let mk_label =
     !lbl
 
 
+(** The given name is assumed to be a label name. If a label is already
+ * register for this name, return it. Otherwise, create a new label, register
+ * it and return it. *)
 let find_or_add ctx name =
   match DefiningNameTable.find_opt ctx.label_table (name :> DefiningName.t) with
   | Some label ->
@@ -108,9 +112,6 @@ let find_or_add ctx name =
 
 type jump_kind = Next | Label of Label.t | Exit
 
-(** We use this intermediate representation for the control flow.
- * Afterwards, this is translated to infer's control flow which is represented
- * imperatively in the Procdesc. *)
 type stmt =
   | Block of block
   | Label of Location.t * Label.t
@@ -160,7 +161,6 @@ let unique_defining_name name =
       L.die InternalError "Cannot generate unique defining name for %s" (AdaNode.short_image name)
 
 
-(** Translate a BaseSubpBody to an infer procedure name *)
 let get_proc_name body =
   let spec = BaseSubpBody.f_subp_spec body in
   let unique_name = BasicDecl.p_unique_identifying_name body in

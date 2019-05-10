@@ -8,6 +8,10 @@
 open! IStd
 open Libadalang
 
+(* This module contains the definition of multiple types usefull for the
+ * translation of ada sources. It also defines some helper functions for
+ * conveniance *)
+
 val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
 
 (** A parameter can either be passed by copy or by reference. This type is
@@ -15,7 +19,7 @@ val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
 type param_mode = Copy | Reference
 
 val param_mode : [< TypeExpr.t] -> Mode.t option -> param_mode
-(** Map a mode of a function to the parameter passing strategy *)
+(** Map a the type and the mode of a function parameter to the passing strategy *)
 
 module Label = Int
 
@@ -71,6 +75,10 @@ val find_or_add : context -> [< DefiningName.t] -> Label.t
 (** Find the label for the given defining name. If it does not exists, add a new one
  * to the context and return it *)
 
+(** At the end of a block, the control flow can either:
+  *   Next: Go to the next instruction
+  *   Label l: Go to the block registerd by the label l
+  *   Exit: Go at the exit of the procedure *)
 type jump_kind = Next | Label of Label.t | Exit
 
 (** We use this intermediate representation for the control flow.

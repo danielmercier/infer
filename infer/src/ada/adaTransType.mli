@@ -10,6 +10,8 @@ open Libadalang
 open AdaFrontend
 module L = Logging
 
+(** Entry point for the translation of Ada types to infer types *)
+
 val trans_type_decl : Tenv.t -> [< BaseTypeDecl.t] -> Typ.t
 (** Translate a base type declaration to an IR type *)
 

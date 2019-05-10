@@ -55,6 +55,12 @@ let trans_spec cfg tenv source_file subp_body =
   mk_context cfg tenv source_file proc_desc params_modes ret_type_expr
 
 
+(** Translate a subprogram body into a list of statements.
+ *
+ * The subprogram body is composed of a declaration list and a list of
+ * statements
+ *
+ * Also create nodes for the start and the end of the procedure *)
 let trans_subp_body ctx subp =
   let decl_stmts = SubpBody.f_decls subp |> trans_decls ctx in
   let handled_stmts = SubpBody.f_stmts subp |> HandledStmts.f_stmts |> trans_stmts ctx in
@@ -67,6 +73,9 @@ let trans_subp_body ctx subp =
   trans_cfg ctx (decl_stmts @ handled_stmts)
 
 
+(** Translate a subprogram into a list of statements by first create the
+ * context for the translation of this subprogram, and then calling the
+ * right function for the translation of the actual subprogram type *)
 let trans_subp cfg tenv source_file subp =
   let ctx = trans_spec cfg tenv source_file subp in
   match (subp :> BaseSubpBody.t) with
@@ -76,6 +85,8 @@ let trans_subp cfg tenv source_file subp =
       unimplemented "trans_subp for %s" (AdaNode.short_image subp)
 
 
+(** Translate all the subprograms in the given file.
+ * This is imperative, the capture is stored in disk *)
 let trans_file lal_ctx cfg tenv source_filename =
   let source_file = SourceFile.create source_filename in
   let unit = AnalysisContext.get_from_file lal_ctx source_filename in
@@ -87,7 +98,9 @@ let trans_file lal_ctx cfg tenv source_filename =
         | _ ->
             ()
       in
+      (* Iterate over all nodes to find the subprograms *)
       AdaNode.iter f root ;
+      (* When done with the translation of the subprograms, register them *)
       SourceFiles.add source_file cfg (Tenv.FileLocal tenv) None
   | None ->
       L.die InternalError "No root node for source file: %s" source_filename
