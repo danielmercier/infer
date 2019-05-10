@@ -12,15 +12,16 @@ open Option.Monad_infix
 module L = Logging
 
 let rec trans_type_decl_ tenv type_decl =
+  let int_typ = Typ.(mk (Tint IInt)) in
   match BaseTypeDecl.p_base_type type_decl with
   | Some typ ->
       trans_type_decl_ tenv typ
   | None -> (
     match (type_decl :> BaseTypeDecl.t) with
     | `TypeDecl {f_type_def= (lazy #SignedIntTypeDef.t)} ->
-        Typ.(mk (Tint IInt))
+        int_typ
     | `TypeDecl {f_type_def= (lazy #EnumTypeDef.t)} ->
-        Typ.(mk (Tint IInt))
+        int_typ
     | `TypeDecl {f_name= (lazy (Some name))} when String.equal (AdaNode.text name) "Boolean" ->
         Typ.(mk (Tint IBool))
     | `TypeDecl {f_type_def= (lazy (`TypeAccessDef {f_subtype_indication= (lazy subtype)}))} -> (
@@ -32,14 +33,25 @@ let rec trans_type_decl_ tenv type_decl =
     | `TypeDecl {f_name= (lazy (Some name)); f_type_def= (lazy #RecordTypeDef.t)} ->
         Typ.mk (Typ.Tstruct (Typ.AdaRecord (unique_defining_name name)))
     | `TypeDecl
-        { f_type_def=
+        { f_name= (lazy (Some name))
+        ; f_type_def=
             (lazy
               (`ArrayTypeDef
                 {f_component_type= (lazy (`ComponentDef {f_type_expr= (lazy type_expr)}))})) } ->
         (* TODO: translate static length arrays and use fixed length *)
-        Typ.mk
-          (Typ.Tarray
-             {elt= trans_type_expr_ tenv (type_expr :> TypeExpr.t); length= None; stride= None})
+        let struct_name = Typ.AdaRecord (unique_defining_name name) in
+        let array_typ =
+          Typ.mk (Typ.Tptr (trans_type_expr_ tenv (type_expr :> TypeExpr.t), Typ.Pk_pointer))
+        in
+        ignore
+          (Tenv.mk_struct tenv
+             ~fields:
+               [ (Typ.Fieldname.Ada.from_string "first", int_typ, [])
+               ; (Typ.Fieldname.Ada.from_string "last", int_typ, [])
+               ; (Typ.Fieldname.Ada.from_string "length", int_typ, [])
+               ; (Typ.Fieldname.Ada.from_string "data", array_typ, []) ]
+             struct_name) ;
+        Typ.mk (Typ.Tstruct struct_name)
     | `SubtypeDecl {f_subtype= (lazy subtype)} -> (
         let name = SubtypeIndication.f_name subtype in
         match AdaNode.p_xref name >>= DefiningName.p_basic_decl with

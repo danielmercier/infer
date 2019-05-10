@@ -238,16 +238,18 @@ let rec mk_array_access : type a. context -> Typ.t -> Location.t -> Exp.t -> a a
   (* An array is translated to a record with fields for first, last and the data.
    * This function should be use to access the fields of the record *)
   let int_typ = Typ.(mk (Tint IInt)) in
+  let data_field_name = Typ.Fieldname.Ada.from_string "data" in
+  let real_array_typ =
+    let lookup = Tenv.lookup ctx.tenv in
+    Typ.Struct.fld_typ ~lookup ~default:Typ.void data_field_name array_typ
+  in
   match array_access with
   | Index exp ->
       let field = mk_array_access ctx array_typ loc prefix Data in
-      let load_instrs, load_exp = load array_typ loc field in
+      let load_instrs, load_exp = load real_array_typ loc field in
       (load_instrs, Exp.Lindex (load_exp, exp))
   | Data ->
-      let field_name = Typ.Fieldname.Ada.from_string "data" in
-      let lookup = Tenv.lookup ctx.tenv in
-      let typ = Typ.Struct.fld_typ ~lookup ~default:Typ.void field_name array_typ in
-      Exp.Lfield (prefix, field_name, typ)
+      Exp.Lfield (prefix, data_field_name, real_array_typ)
   | First ->
       Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "first", int_typ)
   | Last ->
@@ -709,6 +711,9 @@ and trans_type_constraint ctx lal_typ typ loc expr =
       trans_enum_type_constraint ctx enum_type typ loc (mk_load typ loc expr)
   | `TypeDecl {f_type_def= (lazy (#ArrayTypeDef.t as array_type))} ->
       trans_array_type_constraints ctx array_type typ loc expr
+  | `TypeDecl {f_type_def= (lazy (#RecordTypeDef.t as record_type))} ->
+      (* No particular constraints are applicable for a base record type *)
+      []
   | _ ->
       unimplemented "trans_type_constraint for %s" (AdaNode.short_image lal_typ)
 
