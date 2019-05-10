@@ -480,6 +480,47 @@ and trans_call : type a.
       unimplemented "trans_call for %s" (AdaNode.short_image call_ref)
 
 
+(** Translate a subtype indication into a pair of expressions which represent
+ * the first and last value of the type.
+ * Either the subtype have some constraints in which case we translate the
+ * constraints, or it does not, in which case, we translate the bounds of the
+ * base types *)
+and trans_subtype_indication_bounds ctx subtype_indication =
+  match SubtypeIndication.f_constraint subtype_indication with
+  | Some (`RangeConstraint {f_range= (lazy (`RangeSpec {f_range= (lazy range)}))}) ->
+      trans_bounds_ ctx (range :> [Expr.t | SubtypeIndication.t])
+  | Some _ ->
+      L.die InternalError "To translate a type bound, only range constraints apply"
+  | None -> (
+    match Name.p_referenced_decl (SubtypeIndication.f_name subtype_indication) with
+    | Some (#BaseTypeDecl.t as base_type_decl) ->
+        trans_type_bounds ctx base_type_decl
+    | _ ->
+        L.die InternalError "Cannot get the base type decl for %s"
+          (AdaNode.short_image subtype_indication) )
+
+
+(** Translate a type declaration into a pair of expressions which represent the
+ * first value of the type and the last one. *)
+and trans_type_bounds ctx base_type_decl =
+  match (base_type_decl :> BaseTypeDecl.t) with
+  | `TypeDecl
+      { f_type_def=
+          (lazy (`SignedIntTypeDef {f_range= (lazy (`RangeSpec {f_range= (lazy range)}))})) } ->
+      trans_bounds_ ctx (range :> [Expr.t | SubtypeIndication.t])
+  | `TypeDecl
+      {f_type_def= (lazy (`DerivedTypeDef {f_subtype_indication= (lazy subtype_indication)}))} ->
+      trans_subtype_indication_bounds ctx subtype_indication
+  | `TypeDecl {f_type_def= (lazy (#EnumTypeDef.t as enum_type))} ->
+      let literals = EnumTypeDef.f_enum_literals enum_type |> EnumLiteralDeclList.f_list in
+      let lit_number = List.length literals in
+      ([], [], Exp.zero, Exp.int (IntLit.of_int (lit_number - 1)))
+  | `SubtypeDecl {f_subtype= (lazy subtype_indication)} ->
+      trans_subtype_indication_bounds ctx subtype_indication
+  | _ ->
+      unimplemented "trans_type_bounds for %s" (AdaNode.short_image base_type_decl)
+
+
 and trans_bounds_ ctx bounds_expr =
   match bounds_expr with
   | #Expr.t as expr -> (
@@ -496,13 +537,17 @@ and trans_bounds_ ctx bounds_expr =
         , low_bound_instrs @ high_bound_instrs
         , low_bound
         , high_bound )
-    | (#Identifier.t | #DottedName.t) as ident ->
-        let stmts, (instrs, exp) = trans_expr_ ctx (Tmp "") (ident :> Expr.t) in
-        (stmts, instrs, exp, exp)
+    | #lvalue as lvalue -> (
+      match Name.p_referenced_decl lvalue with
+      | Some (#BaseTypeDecl.t as base_type_decl) ->
+          trans_type_bounds ctx base_type_decl
+      | _ ->
+          let stmts, (instrs, exp) = trans_expr_ ctx (Tmp "") (lvalue :> Expr.t) in
+          (stmts, instrs, exp, exp) )
     | _ ->
         unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr) )
-  | #SubtypeIndication.t ->
-      unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr)
+  | #SubtypeIndication.t as subtype ->
+      trans_subtype_indication_bounds ctx subtype
 
 
 (** Translate a RangeSpec which is a constraint of the form
@@ -651,16 +696,12 @@ and trans_constraint ctx lal_constraint typ loc expr =
  * the base type and we append the other constraint if it has one *)
 and trans_subtype_indication_constraint ctx subtype_indication typ loc expr =
   match Name.p_referenced_decl (SubtypeIndication.f_name subtype_indication) with
-  | Some (#BaseTypeDecl.t as subtype_decl) ->
-      let subtype_constraint_stmts = trans_type_constraint ctx subtype_decl typ loc expr in
-      let constraint_stmts =
-        match SubtypeIndication.f_constraint subtype_indication with
-        | Some constr ->
-            trans_constraint ctx constr typ loc expr
-        | None ->
-            []
-      in
-      subtype_constraint_stmts @ constraint_stmts
+  | Some (#BaseTypeDecl.t as subtype_decl) -> (
+    match SubtypeIndication.f_constraint subtype_indication with
+    | Some constr ->
+        trans_constraint ctx constr typ loc expr
+    | None ->
+        trans_type_constraint ctx subtype_decl typ loc expr )
   | _ ->
       L.die InternalError "Cannot generate a type constraints for subtype %s"
         (AdaNode.short_image subtype_indication)
@@ -714,6 +755,8 @@ and trans_type_constraint ctx lal_typ typ loc expr =
   | `TypeDecl {f_type_def= (lazy (#RecordTypeDef.t as record_type))} ->
       (* No particular constraints are applicable for a base record type *)
       []
+  | `SubtypeDecl {f_subtype= (lazy subtype_indication)} ->
+      trans_subtype_indication_constraint ctx subtype_indication typ loc expr
   | _ ->
       unimplemented "trans_type_constraint for %s" (AdaNode.short_image lal_typ)
 
