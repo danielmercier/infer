@@ -19,11 +19,7 @@ module Sem = BufferOverrunSemantics
 module Payload = SummaryPayload.Make (struct
   type t = BufferOverrunAnalysisSummary.t
 
-  let update_payloads astate (payloads : Payloads.t) =
-    {payloads with buffer_overrun_analysis= Some astate}
-
-
-  let of_payloads (payloads : Payloads.t) = payloads.buffer_overrun_analysis
+  let field = Payloads.Fields.buffer_overrun_analysis
 end)
 
 type summary_and_formals = BufferOverrunAnalysisSummary.t * (Pvar.t * Typ.t) list
@@ -123,7 +119,7 @@ module TransferFunctions = struct
   let forget_ret_relation ret callee_pname mem =
     let ret_loc = Loc.of_pvar (Pvar.get_ret_pvar callee_pname) in
     let ret_var = Loc.of_var (Var.of_id (fst ret)) in
-    Dom.Mem.forget_locs (PowLoc.add ret_loc (PowLoc.singleton ret_var)) mem
+    Dom.Mem.relation_forget_locs (PowLoc.add ret_loc (PowLoc.singleton ret_var)) mem
 
 
   let is_external pname =
@@ -358,12 +354,16 @@ let cached_compute_invariant_map =
         inv_map
 
 
-let compute_summary : local_decls -> CFG.t -> invariant_map -> memory_summary =
- fun locals cfg inv_map ->
+let compute_summary :
+    local_decls -> (Pvar.t * Typ.t) list -> CFG.t -> invariant_map -> memory_summary =
+ fun locals formals cfg inv_map ->
   let exit_node_id = CFG.exit_node cfg |> CFG.Node.id in
   match extract_post exit_node_id inv_map with
   | Some exit_mem ->
-      exit_mem |> Dom.Mem.forget_locs locals |> Dom.Mem.unset_oenv
+      exit_mem
+      |> Dom.Mem.forget_unreachable_locs ~formals
+      |> Dom.Mem.relation_forget_locs locals
+      |> Dom.Mem.unset_oenv
   | None ->
       Bottom
 
@@ -372,6 +372,7 @@ let do_analysis : Callbacks.proc_callback_args -> Summary.t =
  fun {proc_desc; tenv; integer_type_widths; summary} ->
   let inv_map = cached_compute_invariant_map proc_desc tenv integer_type_widths in
   let locals = get_local_decls proc_desc in
+  let formals = Procdesc.get_pvar_formals proc_desc in
   let cfg = CFG.from_pdesc proc_desc in
-  let payload = compute_summary locals cfg inv_map in
+  let payload = compute_summary locals formals cfg inv_map in
   Payload.update_summary payload summary

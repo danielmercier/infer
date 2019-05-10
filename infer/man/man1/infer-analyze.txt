@@ -99,7 +99,8 @@ OPTIONS
        --no-default-checkers
            Deactivates: Default checkers: --biabduction,
            --fragment-retains-view, --linters, --liveness, --ownership,
-           --racerd, --siof, --uninit (Conversely: --default-checkers)
+           --racerd, --siof, --starvation, --uninit (Conversely:
+           --default-checkers)
 
        --eradicate
            Activates: the eradicate @Nullable checker for Java annotations
@@ -301,8 +302,8 @@ OPTIONS
            Timeout for SQLite results database operations, in milliseconds.
            (default: five seconds times number of cores)
 
-       --starvation
-           Activates: starvation analysis (Conversely: --no-starvation)
+       --no-starvation
+           Deactivates: starvation analysis (Conversely: --starvation)
 
        --starvation-only
            Activates: Enable --starvation and disable all other checkers
@@ -352,6 +353,10 @@ CLANG OPTIONS
            go through a symbol starting with "Trusted::".
            (default: [])
 
+       --annotation-reachability-cxx-sources json
+           Override sources in all cxx annotation reachability specs with the
+           given sources spec (default: [])
+
        --cxx-scope-guards json
            Specify scope guard classes that can be read only by destructors
            without being reported as dead stores. (default: [])
@@ -360,8 +365,8 @@ CLANG OPTIONS
            Specify classes where the destructor should be ignored when
            computing liveness. In other words, assignement to variables of
            these types (or common wrappers around these types such as
-           $(u,unique_ptr<type>)) will count as dead stores when the
-           variables are not read explicitly by the program. (default: [])
+           unique_ptr<type>) will count as dead stores when the variables are
+           not read explicitly by the program. (default: [])
 
        --ml-buckets ,-separated sequence of { all | cf | arc | narc | cpp |
        unknown_origin }

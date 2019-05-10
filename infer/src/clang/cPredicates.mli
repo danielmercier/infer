@@ -20,6 +20,9 @@ val objc_block_is_capturing_values : Ctl_parser_types.ast_node -> bool
 val call_method : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
 (** 'call_method an m an' is true iff node an is a call to an ObjC method with name containing string m *)
 
+val call_cxx_method : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
+(** 'call_cxx_method an m an' is true iff node an is a call to a C++ method with name containing string m *)
+
 val call_class_method : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
 (** 'call_class_method an mname' is true iff node an is a call to an ObjC
     class method with name containing mname *)
@@ -525,3 +528,6 @@ val is_init_expr_cxx11_constant : Ctl_parser_types.ast_node -> bool
 
 val cxx_construct_expr_has_no_parameters : Ctl_parser_types.ast_node -> bool
 (** true if a construct expr has no subexpressions *)
+
+val has_unavailable_attribute : Ctl_parser_types.ast_node -> bool
+(** true is a declaration has an Unavailable attribute *)

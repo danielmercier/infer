@@ -387,7 +387,7 @@ let assert_monomial add_typ mono =
   match mono with
   | Mul {typ; args} ->
       assert (Typ.castable add_typ typ) ;
-      assert (Option.exists ~f:(fun n -> 1 < n) (Typ.prim_bit_size_of typ)) ;
+      assert (Option.is_some (Typ.prim_bit_size_of typ)) ;
       Qset.iter args ~f:(fun factor exponent ->
           assert (Q.sign exponent > 0) ;
           assert_indeterminate factor |> Fn.id )
@@ -401,8 +401,10 @@ let assert_poly_term add_typ mono coeff =
   match mono with
   | Integer {data} -> assert (Z.equal Z.one data)
   | Mul {args} ->
-      if Q.equal Q.one coeff then assert (Qset.length args > 1)
-      else assert (Qset.length args > 0) ;
+      ( match Qset.min_elt args with
+      | None | Some (Integer _, _) -> assert false
+      | Some (_, n) -> assert (Qset.length args > 1 || not (Q.equal Q.one n))
+      ) ;
       assert_monomial add_typ mono |> Fn.id
   | _ -> assert_monomial add_typ mono |> Fn.id
 
@@ -442,7 +444,9 @@ let invariant ?(partial = false) e =
   | Var _ | Nondet _ | Label _ | Float _ -> assert_arity 0
   | Convert {dst; src} ->
       ( match args with
-      | [Integer {typ}] -> assert (Typ.equal src typ)
+      | [Integer {typ= Integer _ as typ}] -> assert (Typ.equal src typ)
+      | [arg] ->
+          assert (Option.for_all ~f:(Typ.convertible src) (typ_of arg))
       | _ -> assert_arity 1 ) ;
       assert (Typ.convertible src dst)
   | Add _ -> assert_polynomial e |> Fn.id
@@ -651,6 +655,15 @@ let null = integer Z.zero Typ.ptr
 let bool b = integer (Z.of_bool b) Typ.bool
 let float data = Float {data} |> check invariant
 
+let zero (typ : Typ.t) =
+  match typ with Float _ -> float "0" | _ -> integer Z.zero typ
+
+let one (typ : Typ.t) =
+  match typ with Float _ -> float "1" | _ -> integer Z.one typ
+
+let minus_one (typ : Typ.t) =
+  match typ with Float _ -> float "-1" | _ -> integer Z.minus_one typ
+
 let simp_convert signed (dst : Typ.t) src arg =
   match (dst, arg) with
   | _ when Typ.equal dst src -> arg
@@ -716,7 +729,7 @@ let sum_mul_const const sum =
 
 let rec sum_to_exp typ sum =
   match Qset.length sum with
-  | 0 -> integer Z.zero typ
+  | 0 -> zero typ
   | 1 -> (
     match Qset.min_elt sum with
     | Some (Integer _, q) -> rational q typ
@@ -724,12 +737,16 @@ let rec sum_to_exp typ sum =
     | _ -> Add {typ; args= sum} )
   | _ -> Add {typ; args= sum}
 
-and rational Q.{num; den} typ = simp_div (integer num typ) (integer den typ)
+and rational Q.{num; den} typ =
+  let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
+  simp_div
+    (integer (Z.clamp ~signed:true bits num) typ)
+    (integer (Z.clamp ~signed:true bits den) typ)
 
 and simp_div x y =
   match (x, y) with
   (* i / j *)
-  | Integer {data= i; typ}, Integer {data= j} ->
+  | Integer {data= i; typ}, Integer {data= j} when not (Z.equal Z.zero j) ->
       let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
       integer (Z.bdiv ~bits i j) typ
   (* e / 1 ==> e *)
@@ -742,7 +759,7 @@ and simp_div x y =
 let simp_udiv x y =
   match (x, y) with
   (* i u/ j *)
-  | Integer {data= i; typ}, Integer {data= j} ->
+  | Integer {data= i; typ}, Integer {data= j} when not (Z.equal Z.zero j) ->
       let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
       integer (Z.budiv ~bits i j) typ
   (* e u/ 1 ==> e *)
@@ -752,7 +769,7 @@ let simp_udiv x y =
 let simp_rem x y =
   match (x, y) with
   (* i % j *)
-  | Integer {data= i; typ}, Integer {data= j} ->
+  | Integer {data= i; typ}, Integer {data= j} when not (Z.equal Z.zero j) ->
       let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
       integer (Z.brem ~bits i j) typ
   (* e % 1 ==> 0 *)
@@ -762,7 +779,7 @@ let simp_rem x y =
 let simp_urem x y =
   match (x, y) with
   (* i u% j *)
-  | Integer {data= i; typ}, Integer {data= j} ->
+  | Integer {data= i; typ}, Integer {data= j} when not (Z.equal Z.zero j) ->
       let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
       integer (Z.burem ~bits i j) typ
   (* e u% 1 ==> 0 *)
@@ -813,7 +830,7 @@ let rec simp_add_ typ es poly =
   in
   Qset.fold ~f es ~init:poly
 
-let simp_add typ es = simp_add_ typ es (integer Z.zero typ)
+let simp_add typ es = simp_add_ typ es (zero typ)
 let simp_add2 typ e f = simp_add_ typ (Sum.singleton e) f
 
 (* Products of indeterminants represented by multisets. A product ∏ᵢ xᵢ^nᵢ
@@ -821,20 +838,14 @@ let simp_add2 typ e f = simp_add_ typ (Sum.singleton e) f
    xᵢ and the multiplicities are the exponents nᵢ. *)
 module Prod = struct
   let empty = empty_qset
-  let add exp prod = Qset.add prod exp Q.one
+
+  let add exp prod =
+    assert (match exp with Integer _ -> false | _ -> true) ;
+    Qset.add prod exp Q.one
+
   let singleton exp = add exp empty
   let union = Qset.union
 end
-
-(* map over each monomial of a polynomial *)
-let poly_map_monos poly ~f =
-  match poly with
-  | Add {typ; args= sum} ->
-      Sum.to_exp typ
-        (Sum.map sum ~f:(function
-          | Mul {typ; args= prod} -> Mul {typ; args= f prod}
-          | _ -> violates invariant poly ))
-  | _ -> fail "poly_map_monos" ()
 
 let rec simp_mul2 typ e f =
   match (e, f) with
@@ -852,13 +863,17 @@ let rec simp_mul2 typ e f =
   | Integer {data= c}, x | x, Integer {data= c} ->
       Sum.to_exp typ (Sum.singleton ~coeff:(Q.of_z c) x)
   (* (∏ᵤ₌₀ⁱ xᵤ) × (∏ᵥ₌ᵢ₊₁ⁿ xᵥ) ==> ∏ⱼ₌₀ⁿ xⱼ *)
-  | Mul {typ; args= xs1}, Mul {args= xs2} ->
-      Mul {typ; args= Prod.union xs1 xs2}
+  | Mul {args= xs1}, Mul {args= xs2} -> Mul {typ; args= Prod.union xs1 xs2}
   (* (∏ᵢ xᵢ) × (∑ᵤ cᵤ × ∏ⱼ yᵤⱼ) ==> ∑ᵤ cᵤ × ∏ᵢ xᵢ × ∏ⱼ yᵤⱼ *)
-  | Mul {args= prod}, (Add _ as poly) | (Add _ as poly), Mul {args= prod} ->
-      poly_map_monos ~f:(Prod.union prod) poly
+  | (Mul {args= prod} as m), Add {args= sum}
+   |Add {args= sum}, (Mul {args= prod} as m) ->
+      Sum.to_exp typ
+        (Sum.map sum ~f:(function
+          | Mul {args} -> Mul {typ; args= Prod.union prod args}
+          | Integer _ as c -> simp_mul2 typ c m
+          | mono -> Mul {typ; args= Prod.add mono prod} ))
   (* x₀ × (∏ᵢ₌₁ⁿ xᵢ) ==> ∏ᵢ₌₀ⁿ xᵢ *)
-  | Mul {typ; args= xs1}, x | x, Mul {typ; args= xs1} ->
+  | Mul {args= xs1}, x | x, Mul {args= xs1} ->
       Mul {typ; args= Prod.add x xs1}
   (* e × (∑ᵤ cᵤ × ∏ⱼ yᵤⱼ) ==> ∑ᵤ e × cᵤ × ∏ⱼ yᵤⱼ *)
   | Add {args}, e | e, Add {args} ->
@@ -872,17 +887,17 @@ let simp_mul typ es =
     if Q.equal Q.zero pwr then exp
     else mul_pwr bas Q.(pwr - one) (simp_mul2 typ bas exp)
   in
-  let one = integer Z.one typ in
+  let one = one typ in
   Qset.fold es ~init:one ~f:(fun bas pwr exp ->
       if Q.sign pwr >= 0 then mul_pwr bas pwr exp
       else simp_div exp (mul_pwr bas (Q.neg pwr) one) )
 
-let simp_negate typ x = simp_mul2 typ (integer Z.minus_one typ) x
+let simp_negate typ x = simp_mul2 typ (minus_one typ) x
 
 let simp_sub typ x y =
   match (x, y) with
   (* i - j *)
-  | Integer {data= i; typ}, Integer {data= j} ->
+  | Integer {data= i}, Integer {data= j} ->
       let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
       integer (Z.bsub ~bits i j) typ
   (* x - y ==> x + (-1 * y) *)
@@ -1037,8 +1052,8 @@ let simp_xor x y =
 let simp_shl x y =
   match (x, y) with
   (* i shl j *)
-  | Integer {data= i; typ}, Integer {data= j} when Z.fits_int j ->
-      let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
+  | Integer {data= i; typ= Integer {bits} as typ}, Integer {data= j}
+    when Z.sign j >= 0 && Z.lt j (Z.of_int bits) ->
       integer (Z.bshift_left ~bits i (Z.to_int j)) typ
   (* e shl 0 ==> e *)
   | e, Integer {data} when Z.equal Z.zero data -> e
@@ -1047,8 +1062,8 @@ let simp_shl x y =
 let simp_lshr x y =
   match (x, y) with
   (* i lshr j *)
-  | Integer {data= i; typ}, Integer {data= j} when Z.fits_int j ->
-      let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
+  | Integer {data= i; typ= Integer {bits} as typ}, Integer {data= j}
+    when Z.sign j >= 0 && Z.lt j (Z.of_int bits) ->
       integer (Z.bshift_right_trunc ~bits i (Z.to_int j)) typ
   (* e lshr 0 ==> e *)
   | e, Integer {data} when Z.equal Z.zero data -> e
@@ -1057,8 +1072,8 @@ let simp_lshr x y =
 let simp_ashr x y =
   match (x, y) with
   (* i ashr j *)
-  | Integer {data= i; typ}, Integer {data= j} when Z.fits_int j ->
-      let bits = Option.value_exn (Typ.prim_bit_size_of typ) in
+  | Integer {data= i; typ= Integer {bits} as typ}, Integer {data= j}
+    when Z.sign j >= 0 && Z.lt j (Z.of_int bits) ->
       integer (Z.bshift_right ~bits i (Z.to_int j)) typ
   (* e ashr 0 ==> e *)
   | e, Integer {data} when Z.equal Z.zero data -> e
@@ -1123,7 +1138,7 @@ let app1 ?(partial = false) op arg =
   |> check (fun e ->
          (* every App subexp of output appears in input *)
          match op with
-         | App {op= Eq | Dq} -> ()
+         | App {op= Eq | Dq | Xor} -> ()
          | _ -> (
            match e with
            | App {op= App {op= App {op= Conditional}}} -> ()
@@ -1341,7 +1356,7 @@ let solve e f =
           let d = rational (Q.neg q) typ in
           let r = div n d in
           Some (Map.add_exn s ~key:c ~data:r)
-      | e_f -> solve_uninterp e_f (integer Z.zero typ) )
+      | e_f -> solve_uninterp e_f (zero typ) )
     | Concat {args= ms}, Concat {args= ns} -> (
       match (concat_size ms, concat_size ns) with
       | Some p, Some q -> solve_uninterp e f >>= solve_ p q

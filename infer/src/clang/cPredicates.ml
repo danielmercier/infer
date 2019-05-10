@@ -1400,6 +1400,18 @@ let has_used_attribute an =
   List.exists ~f:(fun attr -> match attr with UsedAttr _ -> true | _ -> false) attributes
 
 
+(* true is a declaration has an Unavailable attribute *)
+let has_unavailable_attribute an =
+  let open Clang_ast_t in
+  let is_unavailable_attr attr = match attr with UnavailableAttr _ -> true | _ -> false in
+  match an with
+  | Ctl_parser_types.Decl d ->
+      let attrs = (Clang_ast_proj.get_decl_tuple d).di_attributes in
+      List.exists attrs ~f:is_unavailable_attr
+  | _ ->
+      false
+
+
 let has_value an al_exp =
   let open Clang_ast_t in
   let open Ctl_parser_types in
@@ -1483,6 +1495,19 @@ let is_init_expr_cxx11_constant an =
   match an with
   | Ctl_parser_types.Decl (VarDecl (_, _, _, vdi)) ->
       vdi.vdi_is_init_expr_cxx11_constant
+  | _ ->
+      false
+
+
+let call_cxx_method an name =
+  let open Clang_ast_t in
+  match an with
+  | Ctl_parser_types.Stmt (CXXMemberCallExpr (_, member :: _, _)) -> (
+    match member with
+    | MemberExpr (_, _, _, memberExprInfo) ->
+        ALVar.compare_str_with_alexp memberExprInfo.mei_name.ni_name name
+    | _ ->
+        false )
   | _ ->
       false
 

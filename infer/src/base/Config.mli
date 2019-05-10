@@ -228,6 +228,8 @@ val annotation_reachability : bool
 
 val annotation_reachability_cxx : Yojson.Basic.json
 
+val annotation_reachability_cxx_sources : Yojson.Basic.json
+
 val annotation_reachability_custom_pairs : Yojson.Basic.json
 
 val anon_args : string list
@@ -648,6 +650,8 @@ val starvation_strict_mode : bool
 val stats_report : string option
 
 val subtype_multirange : bool
+
+val summary_stats : bool
 
 val symops_per_iteration : int option
 
