@@ -58,6 +58,8 @@ let implements_iterator = implements "java.util.Iterator"
 
 let implements_collection = implements "java.util.Collection"
 
+let implements_collections = implements "java.util.Collections"
+
 let implements_list = implements "java.util.List"
 
 let implements_pseudo_collection t s =
@@ -246,6 +248,7 @@ let initializer_classes =
     ; "android.app.Fragment"
     ; "android.app.Service"
     ; "android.support.v4.app.Fragment"
+    ; "androidx.fragment.app.Fragment"
     ; "junit.framework.TestCase" ]
 
 

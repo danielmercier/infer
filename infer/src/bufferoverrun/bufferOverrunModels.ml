@@ -664,6 +664,22 @@ module Collection = struct
 
   let add coll_id = {exec= change_size_by ~size_f:Itv.incr coll_id; check= no_check}
 
+  let singleton_collection el_var =
+    let exec env ~ret:((id, _) as ret) mem =
+      let {exec= new_exec; check= _} = new_collection el_var in
+      let mem = new_exec env ~ret mem in
+      change_size_by ~size_f:Itv.incr id ~ret env mem
+    in
+    {exec; check= no_check}
+
+
+  (** increase the size by [0, 1] because put replaces the value
+     rather than add a new one when the key is found in the map *)
+  let put coll_id =
+    let zero_one = Itv.set_lb_zero Itv.one in
+    {exec= change_size_by ~size_f:(Itv.plus zero_one) coll_id; check= no_check}
+
+
   let size coll_exp =
     let exec _ ~ret:(ret_id, _) mem =
       let result = eval_collection_length coll_exp mem in
@@ -701,6 +717,18 @@ module Collection = struct
   let addAll coll_id coll_to_add =
     let exec model_env ~ret mem =
       let to_add_length = eval_collection_length coll_to_add mem |> Dom.Val.get_itv in
+      change_size_by ~size_f:(Itv.plus to_add_length) coll_id model_env ~ret mem
+    in
+    {exec; check= no_check}
+
+
+  (** increase the size by [0, |collection_to_add|] because put replaces the value
+     rather than add a new one when the key is found in the map *)
+  let putAll coll_id coll_to_add =
+    let exec model_env ~ret mem =
+      let to_add_length =
+        eval_collection_length coll_to_add mem |> Dom.Val.get_itv |> Itv.set_lb_zero
+      in
       change_size_by ~size_f:(Itv.plus to_add_length) coll_id model_env ~ret mem
     in
     {exec; check= no_check}
@@ -770,7 +798,13 @@ module Call = struct
       ; -"malloc" <>$ capt_exp $+...$--> malloc ~can_be_zero:false
       ; -"calloc" <>$ capt_exp $+ capt_exp $!--> calloc ~can_be_zero:false
       ; -"__new"
+        <>$ capt_exp_of_typ (+PatternMatch.implements_pseudo_collection)
+        $+...$--> Collection.new_collection
+      ; -"__new"
         <>$ capt_exp_of_typ (+PatternMatch.implements_collection)
+        $+...$--> Collection.new_collection
+      ; -"__new"
+        <>$ capt_exp_of_typ (+PatternMatch.implements_map)
         $+...$--> Collection.new_collection
       ; -"__new" <>$ capt_exp $+...$--> malloc ~can_be_zero:true
       ; -"__new_array" <>$ capt_exp $+...$--> malloc ~can_be_zero:true
@@ -778,7 +812,7 @@ module Call = struct
       ; -"realloc" <>$ capt_exp $+ capt_exp $+...$--> realloc
       ; -"__get_array_length" <>$ capt_exp $!--> get_array_length
       ; -"__set_array_length" <>$ capt_arg $+ capt_exp $!--> set_array_length
-      ; +PatternMatch.implements_lang "String" &:: "length" <>$ capt_exp $!--> strlen
+      ; +PatternMatch.implements_lang "CharSequence" &:: "length" <>$ capt_exp $!--> strlen
       ; -"strlen" <>$ capt_exp $!--> strlen
       ; -"memcpy" <>$ capt_exp $+ capt_exp $+ capt_exp $+...$--> memcpy
       ; -"memmove" <>$ capt_exp $+ capt_exp $+ capt_exp $+...$--> memcpy
@@ -852,6 +886,16 @@ module Call = struct
       ; -"std" &:: "basic_string" &::.*--> no_model
       ; +PatternMatch.implements_collection
         &:: "<init>" <>$ capt_var_exn $+ capt_exp $--> Collection.init
+        (* model sets as lists *)
+      ; +PatternMatch.implements_collections
+        &:: "singleton" <>$ capt_exp $--> Collection.singleton_collection
+      ; +PatternMatch.implements_collections
+        &:: "emptySet" <>$ capt_exp $--> Collection.new_collection
+        (* model maps as lists *)
+      ; +PatternMatch.implements_collections
+        &:: "singletonMap" <>$ capt_exp $--> Collection.singleton_collection
+      ; +PatternMatch.implements_collections
+        &:: "singletonList" <>$ capt_exp $--> Collection.singleton_collection
       ; +PatternMatch.implements_collection
         &:: "get" <>$ capt_var_exn $+ capt_exp $--> Collection.get_or_set_at_index
       ; +PatternMatch.implements_collection
@@ -860,14 +904,25 @@ module Call = struct
         &:: "remove" <>$ capt_var_exn $+ capt_exp $--> Collection.remove_at_index
       ; +PatternMatch.implements_collection
         &:: "add" <>$ capt_var_exn $+ any_arg $--> Collection.add
+      ; +PatternMatch.implements_pseudo_collection
+        &:: "put" <>$ capt_var_exn $+ any_arg $+ any_arg $--> Collection.put
       ; +PatternMatch.implements_collection
         &:: "add" <>$ capt_var_exn $+ capt_exp $+ any_arg $!--> Collection.add_at_index
       ; +PatternMatch.implements_lang "Iterable"
         &:: "iterator" <>$ capt_exp $!--> Collection.iterator
+      ; +PatternMatch.implements_map &:: "entrySet" <>$ capt_exp $!--> Collection.iterator
+      ; +PatternMatch.implements_map &:: "keySet" <>$ capt_exp $!--> Collection.iterator
+      ; +PatternMatch.implements_map &:: "values" <>$ capt_exp $!--> Collection.iterator
+      ; +PatternMatch.implements_map &:: "put" <>$ capt_var_exn $+ any_arg $+ any_arg
+        $--> Collection.put
+      ; +PatternMatch.implements_map &:: "putAll" <>$ capt_var_exn $+ capt_exp
+        $--> Collection.putAll
       ; +PatternMatch.implements_iterator &:: "hasNext" <>$ capt_exp $!--> Collection.hasNext
       ; +PatternMatch.implements_collection
         &:: "addAll" <>$ capt_var_exn $+ capt_exp $--> Collection.addAll
       ; +PatternMatch.implements_collection
         &:: "addAll" <>$ capt_var_exn $+ capt_exp $+ capt_exp $!--> Collection.addAll_at_index
-      ; +PatternMatch.implements_collection &:: "size" <>$ capt_exp $!--> Collection.size ]
+      ; +PatternMatch.implements_collection &:: "size" <>$ capt_exp $!--> Collection.size
+      ; +PatternMatch.implements_pseudo_collection &:: "size" <>$ capt_exp $!--> Collection.size
+      ; +PatternMatch.implements_map &:: "size" <>$ capt_exp $!--> Collection.size ]
 end

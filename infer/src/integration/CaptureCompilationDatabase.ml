@@ -55,8 +55,9 @@ let run_compilation_database compilation_database should_capture_file =
     "Starting %s %d files@\n%!" Config.clang_frontend_action_string number_of_jobs ;
   L.progress "Starting %s %d files@\n%!" Config.clang_frontend_action_string number_of_jobs ;
   let compilation_commands = List.map ~f:create_cmd compilation_data in
-  let runner = Tasks.Runner.create ~jobs:Config.jobs ~f:invoke_cmd in
-  Tasks.Runner.run runner ~tasks:compilation_commands ;
+  let tasks = Tasks.gen_of_list compilation_commands in
+  let runner = Tasks.Runner.create ~jobs:Config.jobs ~f:invoke_cmd ~tasks in
+  Tasks.Runner.run runner ;
   L.progress "@." ;
   L.(debug Analysis Medium) "Ran %d jobs" number_of_jobs
 

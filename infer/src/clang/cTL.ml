@@ -28,12 +28,20 @@ type transitions =
   | Cond
   | PointerToDecl  (** stmt to decl *)
   | Protocol  (** decl to decl *)
+  | SourceExpr
 [@@deriving compare]
 
 let is_transition_to_successor trans =
   match trans with
-  | Body | InitExpr | FieldName _ | Fields | ParameterName _ | ParameterPos _ | Parameters | Cond
-    ->
+  | Body
+  | InitExpr
+  | FieldName _
+  | Fields
+  | ParameterName _
+  | ParameterPos _
+  | Parameters
+  | Cond
+  | SourceExpr ->
       true
   | Super | PointerToDecl | Protocol | AccessorForProperty _ ->
       false
@@ -150,6 +158,8 @@ module Debug = struct
           Format.pp_print_string fmt "Protocol"
       | PointerToDecl ->
           Format.pp_print_string fmt "PointerToDecl"
+      | SourceExpr ->
+          Format.pp_print_string fmt "SourceExpr"
     in
     match trans_opt with Some trans -> pp_aux fmt trans | None -> Format.pp_print_char fmt '_'
 
@@ -780,6 +790,15 @@ let transition_stmt_to_decl_via_pointer stmt =
       []
 
 
+let transition_stmt_to_stmt_via_source_expr stmt =
+  let open Clang_ast_t in
+  match stmt with
+  | OpaqueValueExpr (_, _, _, ovei) -> (
+    match ovei.ovei_source_expr with Some st -> [Stmt st] | None -> [] )
+  | _ ->
+      []
+
+
 let transition_via_parameters an =
   let open Clang_ast_t in
   match an with
@@ -926,6 +945,8 @@ let next_state_via_transition an trans =
       transition_stmt_to_stmt_via_condition st
   | Stmt st, PointerToDecl ->
       transition_stmt_to_decl_via_pointer st
+  | Stmt st, SourceExpr ->
+      transition_stmt_to_stmt_via_source_expr st
   | an, ParameterName name ->
       transition_via_parameter_name an name
   | an, ParameterPos pos ->
@@ -968,6 +989,8 @@ let rec eval_Atomic pred_name_ args an lcxt =
       CPredicates.call_instance_method an m
   | "call_method", [m], an ->
       CPredicates.call_method an m
+  | "call_cxx_method", [m], an ->
+      CPredicates.call_cxx_method an m
   | "captures_cxx_references", [], _ ->
       CPredicates.captures_cxx_references an
   | "objc_block_is_capturing_values", [], _ ->
@@ -1160,6 +1183,8 @@ let rec eval_Atomic pred_name_ args an lcxt =
       CPredicates.has_visibility_attribute an vis
   | "has_used_attribute", [], an ->
       CPredicates.has_used_attribute an
+  | "has_unavailable_attribute", [], an ->
+      CPredicates.has_unavailable_attribute an
   | "within_available_class_block", [], an ->
       CPredicates.within_available_class_block lcxt an
   | "is_method_called_by_superclass", [], an ->

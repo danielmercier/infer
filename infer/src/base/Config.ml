@@ -203,6 +203,12 @@ let manual_clang = "CLANG OPTIONS"
 
 let manual_clang_linters = "CLANG LINTERS OPTIONS"
 
+let manual_explore_bugs = "EXPLORE BUGS"
+
+let manual_explore_procedures = "EXPLORE PROCEDURES"
+
+let manual_explore_source_files = "EXPLORE SOURCE FILES"
+
 let manual_generic = Cmdliner.Manpage.s_options
 
 let manual_hoisting = "HOISTING OPTIONS"
@@ -681,7 +687,7 @@ and ( annotation_reachability
   and siof =
     mk_checker ~long:"siof" ~default:true
       "the Static Initialization Order Fiasco analysis (C++ only)"
-  and starvation = mk_checker ~long:"starvation" ~default:false "starvation analysis"
+  and starvation = mk_checker ~long:"starvation" ~default:true "starvation analysis"
   and uninit = mk_checker ~long:"uninit" "checker for use of uninitialized values" ~default:true in
   let mk_only (var, long, doc, _) =
     let (_ : bool ref) =
@@ -763,6 +769,12 @@ and annotation_reachability_cxx =
   }
 This will cause us to create a new ISOLATED_REACHING_CONNECT issue for every function whose source path starts with "isolated/" that may reach the function named "connect", ignoring paths that go through a symbol starting with "Trusted::".
 |}
+
+
+and annotation_reachability_cxx_sources =
+  CLOpt.mk_json ~long:"annotation-reachability-cxx-sources"
+    ~in_help:InferCommand.[(Analyze, manual_clang)]
+    {|Override sources in all cxx annotation reachability specs with the given sources spec|}
 
 
 and annotation_reachability_custom_pairs =
@@ -1223,26 +1235,35 @@ and () =
           let issue = IssueType.from_string issue_id in
           IssueType.set_enabled issue b ; issue_id )
         ?default ~meta:"issue_type"
+        ~default_to_string:(fun _ -> "")
         ~in_help:InferCommand.[(Report, manual_generic)]
         doc
     in
     ()
   in
+  let all_issues = IssueType.all_issues () in
   let disabled_issues_ids =
-    IssueType.all_issues ()
-    |> List.filter_map ~f:(fun issue ->
-           if not issue.IssueType.enabled then Some issue.IssueType.unique_id else None )
+    List.filter_map all_issues ~f:(fun issue ->
+        Option.some_if (not issue.IssueType.enabled) issue.IssueType.unique_id )
+  in
+  let pp_issue fmt issue =
+    let pp_enabled fmt enabled =
+      if enabled then F.pp_print_string fmt "enabled by default"
+      else F.pp_print_string fmt "disabled by default"
+    in
+    F.fprintf fmt "%s (%a)" issue.IssueType.unique_id pp_enabled issue.IssueType.enabled
   in
   mk false ~default:disabled_issues_ids ~long:"disable-issue-type"
     ~deprecated:["disable_checks"; "-disable-checks"]
-    (Printf.sprintf
+    (F.asprintf
        "Do not show reports coming from this type of issue. Each checker can report a range of \
         issue types. This option provides fine-grained filtering over which types of issue should \
         be reported once the checkers have run. In particular, note that disabling issue types \
         does not make the corresponding checker not run.\n\
-       \ By default, the following issue types are disabled: %s.\n\n\
-       \ See also $(b,--report-issue-type).\n"
-       (String.concat ~sep:", " disabled_issues_ids)) ;
+        Available issue types are as follows:\n\
+       \  @[<v2>%a@].\n"
+       (Pp.seq ~print_env:Pp.text_break ~sep:"," pp_issue)
+       all_issues) ;
   mk true ~long:"enable-issue-type"
     ~deprecated:["enable_checks"; "-enable-checks"]
     "Show reports coming from this type of issue. By default, all issue types are enabled except \
@@ -1429,12 +1450,12 @@ and help_format =
 
 and html =
   CLOpt.mk_bool ~long:"html"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_bugs)]
     "Generate html report."
 
 
 and hoisting_report_only_expensive =
-  CLOpt.mk_bool ~long:"hoisting-report-only-expensive" ~default:false
+  CLOpt.mk_bool ~long:"hoisting-report-only-expensive" ~default:true
     ~in_help:InferCommand.[(Report, manual_hoisting)]
     "[Hoisting] Report loop-invariant calls only when the function is expensive, i.e. at least \
      linear"
@@ -1520,7 +1541,7 @@ and liveness_dangerous_classes =
     ~in_help:InferCommand.[(Analyze, manual_clang)]
     "Specify classes where the destructor should be ignored when computing liveness. In other \
      words, assignement to variables of these types (or common wrappers around these types such \
-     as $(u,unique_ptr<type>)) will count as dead stores when the variables are not read \
+     as $(i,unique_ptr<type>)) will count as dead stores when the variables are not read \
      explicitly by the program."
 
 
@@ -1610,7 +1631,7 @@ and margin =
 
 and max_nesting =
   CLOpt.mk_int_opt ~long:"max-nesting"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_bugs)]
     "Level of nested procedure calls to show. Trace elements beyond the maximum nesting level are \
      skipped. If omitted, all levels are shown."
 
@@ -1680,7 +1701,7 @@ and only_footprint =
 
 and only_show =
   CLOpt.mk_bool ~long:"only-show"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_bugs)]
     "Show the list of reports and exit"
 
 
@@ -1765,19 +1786,19 @@ and print_using_diff =
 
 and procedures =
   CLOpt.mk_bool ~long:"procedures"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_procedures)]
     "Print functions and methods discovered by infer"
 
 
 and procedures_attributes =
   CLOpt.mk_bool ~long:"procedures-attributes"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_procedures)]
     "Print the attributes of each procedure in the output of $(b,--procedures)"
 
 
 and procedures_definedness =
   CLOpt.mk_bool ~long:"procedures-definedness" ~default:true
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_procedures)]
     "Include procedures definedness in the output of $(b,--procedures), i.e. whether the \
      procedure definition was found, or only the procedure declaration, or the procedure is an \
      auto-generated Objective-C accessor"
@@ -1785,7 +1806,7 @@ and procedures_definedness =
 
 and procedures_filter =
   CLOpt.mk_string_opt ~long:"procedures-filter" ~meta:"filter"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_procedures)]
     "With $(b,--procedures), only print functions and methods (procedures) matching the specified \
      $(i,filter). A procedure filter is of the form $(i,path_pattern:procedure_name). Patterns \
      are interpreted as OCaml Str regular expressions. For instance, to keep only methods named \
@@ -1794,7 +1815,7 @@ and procedures_filter =
 
 and procedures_name =
   CLOpt.mk_bool ~long:"procedures-name"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_procedures)]
     "Include procedures names in the output of $(b,--procedures)"
 
 
@@ -1807,7 +1828,7 @@ and procedures_per_process =
 
 and procedures_source_file =
   CLOpt.mk_bool ~long:"procedures-source-file" ~default:true
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_procedures)]
     "Include the source file in which the procedure definition or declaration was found in the \
      output of $(b,--procedures)"
 
@@ -1989,7 +2010,7 @@ and seconds_per_iteration =
 
 and select =
   CLOpt.mk_int_opt ~long:"select" ~meta:"N"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_bugs)]
     "Select bug number $(i,N). If omitted, prompt for input."
 
 
@@ -2027,19 +2048,19 @@ and skip_translation_headers =
 
 and source_preview =
   CLOpt.mk_bool ~long:"source-preview" ~default:true
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_bugs)]
     "print code excerpts around trace elements"
 
 
 and source_files =
   CLOpt.mk_bool ~long:"source-files"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_source_files)]
     "Print source files discovered by infer"
 
 
 and source_files_cfg =
   CLOpt.mk_bool ~long:"source-files-cfg"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_source_files)]
     (Printf.sprintf
        "Output a dotty file in infer-out/%s for each source file in the output of \
         $(b,--source-files)"
@@ -2048,7 +2069,7 @@ and source_files_cfg =
 
 and source_files_filter =
   CLOpt.mk_string_opt ~long:"source-files-filter" ~meta:"filter"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_source_files)]
     "With $(b,--source-files), only print source files matching the specified $(i,filter). The \
      filter is a pattern that should match the file path. Patterns are interpreted as OCaml Str \
      regular expressions."
@@ -2056,19 +2077,19 @@ and source_files_filter =
 
 and source_files_type_environment =
   CLOpt.mk_bool ~long:"source-files-type-environment"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_source_files)]
     "Print the type environment of each source file in the output of $(b,--source-files)"
 
 
 and source_files_procedure_names =
   CLOpt.mk_bool ~long:"source-files-procedure-names"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_source_files)]
     "Print the names of procedure of each source file in the output of $(b,--source-files)"
 
 
 and source_files_freshly_captured =
   CLOpt.mk_bool ~long:"source-files-freshly-captured"
-    ~in_help:InferCommand.[(Explore, manual_generic)]
+    ~in_help:InferCommand.[(Explore, manual_explore_source_files)]
     "Print whether the source file has been captured in the most recent capture phase in the \
      output of $(b,--source-files)."
 
@@ -2152,6 +2173,10 @@ and stats_report =
 and subtype_multirange =
   CLOpt.mk_bool ~deprecated:["subtype_multirange"] ~long:"subtype-multirange" ~default:true
     "Use the multirange subtyping domain"
+
+
+and summary_stats =
+  CLOpt.mk_bool ~long:"summary-stats" "Print stats about summaries to standard output"
 
 
 and symops_per_iteration =
@@ -2547,6 +2572,8 @@ and analysis_stops = !analysis_stops
 and annotation_reachability = !annotation_reachability
 
 and annotation_reachability_cxx = !annotation_reachability_cxx
+
+and annotation_reachability_cxx_sources = !annotation_reachability_cxx_sources
 
 and annotation_reachability_custom_pairs = !annotation_reachability_custom_pairs
 
@@ -3012,6 +3039,8 @@ and starvation_strict_mode = !starvation_strict_mode
 and stats_report = !stats_report
 
 and subtype_multirange = !subtype_multirange
+
+and summary_stats = !summary_stats
 
 and custom_symbols =
   (* Convert symbol lists to regexps just once, here *)

@@ -11,6 +11,8 @@ module L = Logging
 
 type child_info = {pid: Pid.t; down_pipe: Out_channel.t}
 
+type 'a task_generator = {n_tasks: int; is_empty: unit -> bool; next: 'a option -> 'a option}
+
 (** the state of the pool *)
 type 'a t =
   { jobs: int
@@ -18,18 +20,18 @@ type 'a t =
   ; slots: child_info Array.t
         (** array of child processes with their pids and channels we can use to send work down to
             each child *)
+  ; pending_items: 'a option Array.t
+        (** array keeping sent tasks to children; used for feeding the generator a child finishes *)
   ; children_updates: Unix.File_descr.t
         (** all the children send updates up the same pipe to the pool *)
   ; task_bar: TaskBar.t
-  ; mutable tasks: 'a list  (** work remaining to be done *)
-  ; mutable idle_children: int
-        (** number of children currently ready for more work, but there are no tasks to send to
-            them *)
-  }
+  ; tasks: 'a task_generator  (** generator for work remaining to be done *) }
 
 (** {2 Constants} *)
 
-(** refresh rate of the task bar (worst case: it also refreshes on children updates) *)
+(** refresh rate of the task bar (worst case: it also refreshes on children updates) 
+    this is now mandatory to allow checking for new work packets, when none were 
+    previously available *)
 let refresh_timeout =
   let frames_per_second = 12 in
   `After (Time_ns.Span.of_int_ms (1_000 / frames_per_second))
@@ -81,11 +83,11 @@ let rec really_read ?(pos = 0) ~len fd ~buf =
      elapsed *)
 let wait_for_updates pool buffer =
   let file_descr = pool.children_updates in
-  let timeout = if TaskBar.is_interactive pool.task_bar then refresh_timeout else `Never in
   (* Use select(2) so that we can both wait on the pipe of children updates and wait for a
-     timeout. The timeout is for giving a chance to the taskbar of refreshing from time to time. *)
+     timeout. The timeout is for giving a chance to the taskbar of refreshing from time to time,
+     as well as for checking for new work where none were previously available. *)
   let {Unix.Select_fds.read= read_fds} =
-    Unix.select ~read:[file_descr] ~write:[] ~except:[] ~timeout ()
+    Unix.select ~read:[file_descr] ~write:[] ~except:[] ~timeout:refresh_timeout ()
   in
   match read_fds with
   | _ :: _ :: _ ->
@@ -138,6 +140,21 @@ let has_dead_child pool =
          , status ) )
 
 
+let idle_children pool =
+  Array.fold pool.pending_items ~init:0 ~f:(fun acc -> function Some _ -> acc | None -> 1 + acc)
+
+
+let send_work_to_child pool slot =
+  match pool.tasks.next pool.pending_items.(slot) with
+  | None ->
+      TaskBar.update_status pool.task_bar ~slot (Mtime_clock.now ()) "idle" ;
+      pool.pending_items.(slot) <- None
+  | Some x ->
+      let {down_pipe} = pool.slots.(slot) in
+      pool.pending_items.(slot) <- Some x ;
+      marshal_to_pipe down_pipe (Do x)
+
+
 (** main dispatch function that responds to messages from worker processes and updates the taskbar
    periodically *)
 let process_updates pool buffer =
@@ -153,18 +170,16 @@ let process_updates pool buffer =
       (* clean crash, give the child process a chance to cleanup *)
       Unix.wait (`Pid pid) |> ignore ;
       killall pool ~slot "see backtrace above"
-  | Some (Ready slot) -> (
+  | Some (Ready slot) ->
       TaskBar.tasks_done_add pool.task_bar 1 ;
-      match pool.tasks with
-      | [] ->
-          TaskBar.update_status pool.task_bar ~slot (Mtime_clock.now ()) "idle" ;
-          pool.idle_children <- pool.idle_children + 1
-      | x :: tasks ->
-          pool.tasks <- tasks ;
-          let {down_pipe} = pool.slots.(slot) in
-          marshal_to_pipe down_pipe (Do x) )
-  | None ->
-      ()
+      send_work_to_child pool slot
+  | None -> (
+    (* no updates, so try to schedule more work if there is an idle worker *)
+    match Array.findi pool.pending_items ~f:(fun _idx item -> Option.is_none item) with
+    | None ->
+        ()
+    | Some (idle_slot, _) ->
+        send_work_to_child pool idle_slot )
 
 
 (** terminate all worker processes *)
@@ -260,8 +275,9 @@ let fork_child ~child_prelude ~slot (updates_r, updates_w) ~f =
       {pid; down_pipe= Unix.out_channel_of_descr to_child_w}
 
 
-let create : jobs:int -> child_prelude:(unit -> unit) -> f:('a -> unit) -> 'a t =
- fun ~jobs ~child_prelude ~f ->
+let create :
+    jobs:int -> child_prelude:(unit -> unit) -> f:('a -> unit) -> tasks:'a task_generator -> 'a t =
+ fun ~jobs ~child_prelude ~f ~tasks ->
   let task_bar = TaskBar.create ~jobs in
   (* Pipe to communicate from children to parent. Only one pipe is needed: the messages sent by
       children include the identifier of the child sending the message (its [slot]). This way there
@@ -271,12 +287,12 @@ let create : jobs:int -> child_prelude:(unit -> unit) -> f:('a -> unit) -> 'a t 
   (* we have forked the child processes and are now in the parent *)
   let[@warning "-26"] pipe_child_w = Unix.close pipe_child_w in
   let children_updates = pipe_child_r in
-  {slots; children_updates; jobs; task_bar; tasks= []; idle_children= 0}
+  let pending_items : 'a option Array.t = Array.create ~len:jobs None in
+  {slots; children_updates; jobs; task_bar; tasks; pending_items}
 
 
-let run pool tasks =
-  pool.tasks <- tasks ;
-  TaskBar.set_tasks_total pool.task_bar (List.length tasks) ;
+let run pool =
+  TaskBar.set_tasks_total pool.task_bar pool.tasks.n_tasks ;
   TaskBar.tasks_done_reset pool.task_bar ;
   (* Start with a negative number of completed tasks to account for the initial [Ready]
      messages. All the children start by sending [Ready], which is interpreted by the parent process
@@ -286,14 +302,14 @@ let run pool tasks =
   (* allocate a buffer for reading children updates once for the whole run *)
   let buffer = Bytes.create buffer_size in
   (* wait for all children to run out of tasks *)
-  while not (List.is_empty pool.tasks && pool.idle_children >= pool.jobs) do
+  while not (pool.tasks.is_empty () && idle_children pool >= pool.jobs) do
     process_updates pool buffer ; TaskBar.refresh pool.task_bar
   done ;
   wait_all pool ;
   TaskBar.finish pool.task_bar
 
 
-let run pool tasks =
+let run pool =
   PerfEvent.(log (fun logger -> log_instant_event logger ~name:"start process pool" Global)) ;
-  run pool tasks ;
+  run pool ;
   PerfEvent.(log (fun logger -> log_instant_event logger ~name:"end process pool" Global))

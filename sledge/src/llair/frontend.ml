@@ -31,16 +31,16 @@ let (scan_locs : Llvm.llmodule -> unit), (find_loc : Llvm.llvalue -> Loc.t)
     =
   let loc_of_global g =
     Loc.mk
-      ?dir:(Llvm.get_global_debug_loc_directory g)
-      ?file:(Llvm.get_global_debug_loc_filename g)
-      ~line:(Llvm.get_global_debug_loc_line g)
+      ?dir:(Llvm.get_debug_loc_directory g)
+      ?file:(Llvm.get_debug_loc_filename g)
+      ~line:(Llvm.get_debug_loc_line g)
       ?col:None
   in
   let loc_of_function f =
     Loc.mk
-      ?dir:(Llvm.get_function_debug_loc_directory f)
-      ?file:(Llvm.get_function_debug_loc_filename f)
-      ~line:(Llvm.get_function_debug_loc_line f)
+      ?dir:(Llvm.get_debug_loc_directory f)
+      ?file:(Llvm.get_debug_loc_filename f)
+      ~line:(Llvm.get_debug_loc_line f)
       ?col:None
   in
   let loc_of_instr i =
@@ -68,13 +68,15 @@ let (scan_locs : Llvm.llmodule -> unit), (find_loc : Llvm.llvalue -> Loc.t)
       match Llvm.instr_opcode i with
       | Call -> (
         match Llvm.(value_name (operand i (num_arg_operands i))) with
-        | "llvm.dbg.declare" -> (
-          match Llvm.(get_mdnode_operands (operand i 0)) with
-          | [|var|] when not (String.is_empty (Llvm.value_name var)) ->
-              add ~key:var ~data:loc
-          | _ ->
-              warn "could not find variable for debug info %a at %a"
-                pp_llvalue (Llvm.operand i 0) Loc.pp loc )
+        | "llvm.dbg.declare" ->
+            let md = Llvm.(get_mdnode_operands (operand i 0)) in
+            if not (Array.is_empty md) then add ~key:md.(0) ~data:loc
+            else
+              warn
+                "could not find variable for debug info %a at %a with \
+                 metadata %a"
+                pp_llvalue (Llvm.operand i 0) Loc.pp loc
+                (List.pp ", " pp_llvalue) (Array.to_list md)
         | _ -> () )
       | _ -> ()
     in
@@ -256,12 +258,7 @@ let rec xlate_type : x -> Llvm.lltype -> Typ.t =
       ;
       xlate_type_ llt
       |>
-      [%Trace.retn fun {pf} typ ->
-        assertf
-          (Bool.equal (Llvm.type_is_sized llt) (Typ.is_sized typ))
-          !"xlate_type did not preserve is_sized: %a to %a %{sexp:Typ.t}"
-          pp_lltype llt Typ.pp typ typ () ;
-        pf "%a" Typ.pp_defn typ] )
+      [%Trace.retn fun {pf} -> pf "%a" Typ.pp_defn] )
 
 and xlate_type_opt : x -> Llvm.lltype -> Typ.t option =
  fun x llt ->
@@ -301,6 +298,9 @@ let xlate_name_opt : Llvm.llvalue -> Var.t option =
   | _ -> Some (xlate_name instr)
 
 let memo_value : (Llvm.llvalue, Exp.t) Hashtbl.t = Hashtbl.Poly.create ()
+
+let memo_global : (Llvm.llvalue, Global.t) Hashtbl.t =
+  Hashtbl.Poly.create ()
 
 module Llvalue = struct
   type t = Llvm.llvalue
@@ -591,27 +591,27 @@ and xlate_opcode : x -> Llvm.llvalue -> Llvm.Opcode.t -> Exp.t =
 
 and xlate_global : x -> Llvm.llvalue -> Global.t =
  fun x llg ->
-  let init =
-    match (Llvm.classify_value llg, Llvm.linkage llg) with
-    | _, (External | External_weak) -> None
-    | GlobalVariable, _ ->
-        Some (xlate_value x (Llvm.global_initializer llg))
-    | _ -> None
-  in
-  let g = xlate_name llg in
-  let llt = Llvm.type_of llg in
-  let typ = xlate_type x llt in
-  let siz = size_of x llt in
-  let loc = find_loc llg in
-  Global.mk g ?init siz typ loc
-
-let xlate_global : x -> Llvm.llvalue -> Global.t =
- fun x llg ->
-  [%Trace.call fun {pf} -> pf "%a" pp_llvalue llg]
-  ;
-  xlate_global x llg
-  |>
-  [%Trace.retn fun {pf} -> pf "%a" Global.pp]
+  Hashtbl.find_or_add memo_global llg ~default:(fun () ->
+      [%Trace.call fun {pf} -> pf "%a" pp_llvalue llg]
+      ;
+      let g = xlate_name llg in
+      let llt = Llvm.type_of llg in
+      let typ = xlate_type x llt in
+      let siz = size_of x llt in
+      let loc = find_loc llg in
+      (* add to tbl without initializer in case of recursive occurrences in
+         its own initializer *)
+      Hashtbl.set memo_global ~key:llg ~data:(Global.mk g siz typ loc) ;
+      let init =
+        match (Llvm.classify_value llg, Llvm.linkage llg) with
+        | _, (External | External_weak) -> None
+        | GlobalVariable, _ ->
+            Some (xlate_value x (Llvm.global_initializer llg))
+        | _ -> None
+      in
+      Global.mk ?init g siz typ loc
+      |>
+      [%Trace.retn fun {pf} -> pf "%a" Global.pp] )
 
 type pop_thunk = Loc.t -> Llair.inst list
 
@@ -848,6 +848,7 @@ let rec xlate_func_name x llv =
   | GlobalAlias -> xlate_func_name x (Llvm.operand llv 0)
   | GlobalIFunc -> todo "ifunc: %a" pp_llvalue llv ()
   | InlineAsm -> todo "inline asm: %a" pp_llvalue llv ()
+  | ConstantPointerNull -> todo "call null: %a" pp_llvalue llv ()
   | _ -> fail "unknown function: %a" pp_llvalue llv ()
 
 let ignored_callees = Hash_set.create (module String)
@@ -901,12 +902,14 @@ let xlate_instr :
           ~src:(xlate_type x (Llvm.type_of rand))
           (xlate_value x rand)
       in
+      assert (Poly.(Llvm.classify_type (Llvm.type_of instr) = Pointer)) ;
       let llt = Llvm.element_type (Llvm.type_of instr) in
       let len = Exp.integer (Z.of_int (size_of x llt)) Typ.siz in
       emit_inst (Llair.Inst.alloc ~reg ~num ~len ~loc)
   | Call -> (
       let llfunc = Llvm.operand instr (Llvm.num_operands instr - 1) in
       let lltyp = Llvm.type_of llfunc in
+      assert (Poly.(Llvm.classify_type lltyp = Pointer)) ;
       let fname = Llvm.value_name llfunc in
       let skip msg =
         ( match Hash_set.strict_add ignored_callees fname with
@@ -994,20 +997,21 @@ let xlate_instr :
       let reg = xlate_name_opt instr in
       let llfunc = Llvm.operand instr (Llvm.num_operands instr - 3) in
       let lltyp = Llvm.type_of llfunc in
+      assert (Poly.(Llvm.classify_type lltyp = Pointer)) ;
       let fname = Llvm.value_name llfunc in
       let return_blk = Llvm.get_normal_dest instr in
       let return_dst = label_of_block return_blk in
       let unwind_blk = Llvm.get_unwind_dest instr in
       let unwind_dst = label_of_block unwind_blk in
+      let num_args =
+        if not (Llvm.is_var_arg (Llvm.element_type lltyp)) then
+          Llvm.num_arg_operands instr
+        else (
+          warn "ignoring variable arguments to variadic function: %a"
+            pp_llvalue instr ;
+          Array.length (Llvm.param_types (Llvm.element_type lltyp)) )
+      in
       let args =
-        let num_args =
-          if not (Llvm.is_var_arg (Llvm.element_type lltyp)) then
-            Llvm.num_arg_operands instr
-          else (
-            warn "ignoring variable arguments to variadic function: %a"
-              pp_llvalue instr ;
-            Array.length (Llvm.param_types (Llvm.element_type lltyp)) )
-        in
         List.rev_init num_args ~f:(fun i ->
             xlate_value x (Llvm.operand instr i) )
       in
@@ -1020,7 +1024,7 @@ let xlate_instr :
       | ["__llair_throw"] ->
           let dst = Llair.Jump.mk unwind_dst args in
           emit_term (Llair.Term.goto ~dst ~loc)
-      | ["_Znwm" (* operator new(size_t num) *)] ->
+      | ["_Znwm" (* operator new(size_t num) *)] when num_args = 1 ->
           let reg = xlate_name instr in
           let num = xlate_value x (Llvm.operand instr 0) in
           let llt = Llvm.type_of instr in
@@ -1311,7 +1315,7 @@ let transform : Llvm.llmodule -> unit =
   Llvm_scalar_opts.add_lower_atomic pm ;
   Llvm_scalar_opts.add_scalar_repl_aggregation pm ;
   Llvm_scalar_opts.add_scalarizer pm ;
-  Llvm_scalar_opts.add_merge_return pm ;
+  Llvm_scalar_opts.add_unify_function_exit_nodes pm ;
   Llvm_scalar_opts.add_cfg_simplification pm ;
   Llvm.PassManager.run_module llmodule pm |> (ignore : bool -> _) ;
   Llvm.PassManager.dispose pm
@@ -1356,6 +1360,7 @@ let translate : string -> Llair.t =
   Hashtbl.clear scope_tbl ;
   Hashtbl.clear anon_struct_name ;
   Hashtbl.clear memo_type ;
+  Hashtbl.clear memo_global ;
   Hashtbl.clear memo_value ;
   Hash_set.clear ignored_callees ;
   Llvm.dispose_module llmodule ;

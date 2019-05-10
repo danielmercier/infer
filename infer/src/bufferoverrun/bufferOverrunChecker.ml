@@ -23,11 +23,7 @@ module Trace = BufferOverrunTrace
 module Payload = SummaryPayload.Make (struct
   type t = BufferOverrunCheckerSummary.t
 
-  let update_payloads astate (payloads : Payloads.t) =
-    {payloads with buffer_overrun_checker= Some astate}
-
-
-  let of_payloads (payloads : Payloads.t) = payloads.buffer_overrun_checker
+  let field = Payloads.Fields.buffer_overrun_checker
 end)
 
 module UnusedBranch = struct
@@ -422,7 +418,7 @@ let get_checks_summary : BufferOverrunAnalysis.local_decls -> checks -> checks_s
        { cond_set
        ; unused_branches= _ (* intra-procedural *)
        ; unreachable_statements= _ (* intra-procedural *) } ->
-  PO.ConditionSet.for_summary ~forget_locs:locals cond_set
+  PO.ConditionSet.for_summary ~relation_forget_locs:locals cond_set
 
 
 let checker : Callbacks.proc_callback_args -> Summary.t =
