@@ -64,7 +64,7 @@ type _ continuation =
   | Tmp : string -> (Sil.instr list * Exp.t) continuation
   | Inline : expr continuation
 
-val map_to_stmts : f:(simple_expr -> stmt list) -> context -> Location.t -> expr -> stmt list
+val map_to_stmts : f:(simple_expr -> stmt list) -> Location.t -> expr -> stmt list
 (** transform an expression to a list of statements by calling f on the leafs *)
 
 val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a

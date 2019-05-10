@@ -108,7 +108,7 @@ let rec map ~f expr_result =
 
 
 (** transform an expression to a list of statements by calling f on the leafs *)
-let rec map_to_stmts ~f ctx loc expr_result =
+let rec map_to_stmts ~f loc expr_result =
   let rec aux expr_result =
     match expr_result with
     | SimpleExpr simple_expr ->
@@ -148,11 +148,11 @@ let return : type a.
         | Exp (instrs, exp) ->
             (* In this case we create a if expression with one branch where the
            * expression is true, and false in the other branch *)
-            map_to_stmts ~f ctx loc (If (instrs, exp, (of_bool true, of_bool false)))
+            map_to_stmts ~f loc (If (instrs, exp, (of_bool true, of_bool false)))
         | Bool b ->
             [Jump (loc, if b then jump_true else jump_false)]
       in
-      (stmts @ map_to_stmts ~f ctx loc expr, ())
+      (stmts @ map_to_stmts ~f loc expr, ())
   | Tmp name -> (
     match expr with
     | SimpleExpr simple_expr ->
@@ -170,7 +170,7 @@ let return : type a.
         in
         let id = Ident.(create_fresh knormal) in
         let load = Sil.Load (id, Exp.Lvar tmp_var, typ, loc) in
-        (stmts @ map_to_stmts ~f ctx loc expr, ([load], Exp.Var id)) )
+        (stmts @ map_to_stmts ~f loc expr, ([load], Exp.Var id)) )
   | Inline ->
       (stmts, expr)
 
@@ -530,7 +530,7 @@ and trans_range_constraint ctx lal_range typ loc expr =
             ; loc
             ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
       in
-      bounds_stmts @ map_to_stmts ~f:bounds_constraint ctx loc expr
+      bounds_stmts @ map_to_stmts ~f:bounds_constraint loc expr
 
 
 (** Translate a constraint on discriminants to prune nodes on the given expressions.
@@ -559,7 +559,7 @@ and trans_discriminant_constraint ctx lal_discr typ loc expr =
           ; loc
           ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
     in
-    actual_stmts @ (combine ~f:mk_equal expr actual_expr |> map_to_stmts ~f:mk_prune_node ctx loc)
+    actual_stmts @ (combine ~f:mk_equal expr actual_expr |> map_to_stmts ~f:mk_prune_node loc)
   in
   List.map ~f:constrain_discriminant params_actual |> List.concat
 
@@ -603,7 +603,7 @@ and trans_array_constraints ctx constraints typ loc expr =
     let prune_length_stmts =
       (* To compute the length of the array, we use an if expression:
        * if first <= last then last - first + 1 else 0 *)
-      map_to_stmts ~f:prune_length ctx loc
+      map_to_stmts ~f:prune_length loc
         (If
            ( bounds_instrs
            , Exp.le first last
@@ -626,7 +626,7 @@ and trans_array_constraints ctx constraints typ loc expr =
           ; loc
           ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
   in
-  bounds_stmts @ map_to_stmts ~f ctx loc expr
+  bounds_stmts @ map_to_stmts ~f loc expr
 
 
 (** Translate a constraint on a type to prune nodes on the given expressions.
@@ -684,7 +684,7 @@ and trans_enum_type_constraint ctx enum_type typ loc expr =
         ; loc
         ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
   in
-  map_to_stmts ~f:mk_comp ctx loc expr
+  map_to_stmts ~f:mk_comp loc expr
 
 
 and trans_array_type_constraints ctx array_type typ loc expr =

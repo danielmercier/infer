@@ -25,7 +25,7 @@ let trans_assignment ctx orig_node lal_type_expr dest_instrs dest_expr expr =
     let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
     [Block {instrs; loc; nodekind}]
   in
-  map_to_stmts ~f ctx loc expr
+  map_to_stmts ~f loc expr
 
 
 let trans_simple_stmt ctx simple_stmt =
@@ -384,7 +384,7 @@ and trans_decl ctx decl =
                   ; nodekind= Procdesc.Node.(Stmt_node DeclStmt) } ]
             in
             let stmts, expr = trans_expr ctx Inline default_expr in
-            stmts @ map_to_stmts ~f:assign_ids ctx loc expr
+            stmts @ map_to_stmts ~f:assign_ids loc expr
         | None ->
             []
       in
