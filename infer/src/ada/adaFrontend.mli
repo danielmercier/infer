@@ -14,7 +14,7 @@ val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
  * used to differenciate both passing methods *)
 type param_mode = Copy | Reference
 
-val param_mode : Mode.t option -> param_mode
+val param_mode : [< TypeExpr.t] -> Mode.t option -> param_mode
 (** Map a mode of a function to the parameter passing strategy *)
 
 module Label = Int

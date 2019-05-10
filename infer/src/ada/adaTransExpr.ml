@@ -797,7 +797,8 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
         |> List.map ~f:(fun {ParamActual.param; actual} ->
                match DefiningName.p_basic_decl param with
                | Some (#ParamSpec.t as param_spec) ->
-                   (param_mode (ParamSpec.f_mode param_spec), actual)
+                   ( param_mode (ParamSpec.f_type_expr param_spec) (ParamSpec.f_mode param_spec)
+                   , actual )
                | _ ->
                    L.die InternalError "Should be called on a procedure param_actuals" )
       in

@@ -24,7 +24,7 @@ let trans_spec cfg tenv source_file subp_body =
     >>| map_params ~f:(fun (name, typ, mode) ->
             ( unique_defining_name name
             , let ir_typ = trans_type_expr tenv typ in
-              match param_mode mode with
+              match param_mode typ mode with
               | Copy ->
                   ir_typ
               | Reference ->
@@ -36,7 +36,7 @@ let trans_spec cfg tenv source_file subp_body =
   let params_modes =
     (* Create the table that maps a defining name to it's mode *)
     SubpSpec.f_subp_params subp_spec
-    >>| map_params ~f:(fun (name, _, mode) -> (name, param_mode mode))
+    >>| map_params ~f:(fun (name, typ, mode) -> (name, param_mode typ mode))
     >>| List.fold_left
           ~f:(fun name_map (name, mode) -> DefiningNameMap.add name mode name_map)
           ~init:DefiningNameMap.empty

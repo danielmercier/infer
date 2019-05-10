@@ -7,6 +7,7 @@
 
 open! IStd
 open Libadalang
+open LalUtils
 open Option.Monad_infix
 module L = Logging
 module F = Format
@@ -32,11 +33,12 @@ type lvalue =
 type param_mode = Copy | Reference
 
 (** Map a mode of a function to the parameter passing strategy *)
-let param_mode = function
-  | Some (`ModeDefault _) | Some (`ModeIn _) | None ->
-      Copy
+let param_mode typ = function
   | Some (`ModeInOut _) | Some (`ModeOut _) ->
       Reference
+  | Some (`ModeDefault _) | Some (`ModeIn _) | None ->
+      (* Always pass arrays and records by reference *)
+      if is_record_type typ || is_array_type typ then Reference else Copy
 
 
 module Label = Int
