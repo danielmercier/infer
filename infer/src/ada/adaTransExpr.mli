@@ -50,17 +50,15 @@ val to_exp : simple_expr -> Sil.instr list * Exp.t
 val mk_not : Exp.t -> Exp.t
 (** Return the complement of the given expression, by simplifying it if possible *)
 
-(** Type used to call mk_array_access to access a field of the array or an index 
- * Use a GADT because when accessing an index, we need setup instructions *)
-type _ array_access =
-  | Index : Exp.t -> (Sil.instr list * Exp.t) array_access
-  | Data : Exp.t array_access
-  | First : Exp.t array_access
-  | Last : Exp.t array_access
-  | Length : Exp.t array_access
+val load : Typ.t -> Location.t -> Exp.t -> Sil.instr list * Exp.t
+(** return instruction to load the given exp in an ident and return an exp
+ * representing this ident. *)
 
-val mk_array_access : context -> Typ.t -> Location.t -> Exp.t -> 'a array_access -> 'a
-(** Compute the access to the desired field or index of the given lvalue assuming
+(** Type used to call mk_array_access to access a field of the array *)
+type array_access = Data | First | Last | Length
+
+val mk_array_access : context -> Typ.t -> Exp.t -> array_access -> Typ.t * Exp.t
+(** Compute the access to the desired field of the given lvalue assuming
  * it is an array. *)
 
 (** A value of this type is passed to the translation of the expression. It says
@@ -87,6 +85,9 @@ val map_to_stmts : f:(simple_expr -> stmt list) -> Location.t -> expr -> stmt li
 
 val trans_expr : context -> 'a continuation -> [< Expr.t] -> stmt list * 'a
 (** Translate an expression to an intermediate representation. *)
+
+val trans_bounds_from_discrete :
+  context -> AdaType.discrete -> stmt list * Sil.instr list * Exp.t * Exp.t
 
 val trans_bounds :
   context -> [< Expr.t | SubtypeIndication.t] -> stmt list * Sil.instr list * Exp.t * Exp.t
@@ -116,11 +117,6 @@ val trans_membership_expr :
   * [A; B; C]
   *
   * This is translated by calling trans_bounds on each element of this list *)
-
-val trans_type_expr_constraint :
-  context -> [< TypeExpr.t] -> Typ.t -> Location.t -> expr -> stmt list
-(** Translate the constraints of the given type expression to a list of
- * prune statements. expr should be an lvalue *)
 
 val type_of_expr : context -> [< Expr.t] -> Typ.t
 (** Compute the type of the given lal expression *)

@@ -7,9 +7,10 @@
 
 open! IStd
 open Libadalang
+open AdaUtils
 open LalUtils
 open AdaFrontend
-open AdaTransType
+open AdaType
 open Option.Monad_infix
 module L = Logging
 
@@ -44,23 +45,10 @@ let rec mk_not exp =
       UnOp (Unop.LNot, exp, Some Typ.(mk (Tint IBool)))
 
 
-(** Compute the type of the given lal expression *)
 let type_of_expr ctx expr =
-  match Expr.p_expression_type expr with
-  | Some typ ->
-      trans_type_decl ctx.tenv typ
-  | None ->
-      (* No type. We concider that the expression have the type void *)
-      Typ.void
-
-
-(** If the given name is a name of a record field, return this field *)
-let record_field name =
-  match Name.p_referenced_decl name with
-  | Some ((#ComponentDecl.t | #DiscriminantSpec.t) as field) ->
-      Some field
-  | _ ->
-      None
+  let ada_tenv = ctx.tenvs.ada_tenv in
+  let infer_tenv = ctx.tenvs.infer_tenv in
+  to_infer_typ ada_tenv infer_tenv (trans_type_of_expr ada_tenv expr)
 
 
 let load typ loc exp =
@@ -225,57 +213,55 @@ let mk_load typ loc expr =
   map ~f expr
 
 
-(* Type used to call mk_array_access to access a field of the array or an index 
- * Use a GADT because when accessing an index, we need setup instructions *)
-type _ array_access =
-  | Index : Exp.t -> (Sil.instr list * Exp.t) array_access
-  | Data : Exp.t array_access
-  | First : Exp.t array_access
-  | Last : Exp.t array_access
-  | Length : Exp.t array_access
+(* Type used to call mk_array_access to access a field of the array *)
+type array_access = Data | First | Last | Length
 
 (** An array is translated to a record with fields for first, last, length and
  * the data. This function should be use to access the fields of the record *)
-let rec mk_array_access : type a. context -> Typ.t -> Location.t -> Exp.t -> a array_access -> a =
- fun ctx array_typ loc prefix array_access ->
-  let int_typ = Typ.(mk (Tint IInt)) in
+let rec mk_array_access ctx array_typ prefix array_access =
   let data_field_name = Typ.Fieldname.Ada.from_string "data" in
-  let real_array_typ =
-    let lookup = Tenv.lookup ctx.tenv in
-    Typ.Struct.fld_typ ~lookup ~default:Typ.void data_field_name array_typ
+  let field_typ field =
+    let lookup = Tenv.lookup ctx.tenvs.infer_tenv in
+    Typ.Struct.fld_typ ~lookup ~default:Typ.void field array_typ
   in
   match array_access with
-  | Index exp ->
-      let field = mk_array_access ctx array_typ loc prefix Data in
-      let load_instrs, load_exp = load real_array_typ loc field in
-      (load_instrs, Exp.Lindex (load_exp, exp))
   | Data ->
-      Exp.Lfield (prefix, data_field_name, real_array_typ)
+      let real_array_typ = field_typ data_field_name in
+      (real_array_typ, Exp.Lfield (prefix, data_field_name, real_array_typ))
   | First ->
-      Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "first", int_typ)
+      let first_field = Typ.Fieldname.Ada.from_string "first" in
+      let first_typ = field_typ first_field in
+      (first_typ, Exp.Lfield (prefix, first_field, first_typ))
   | Last ->
-      Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "last", int_typ)
+      let last_field = Typ.Fieldname.Ada.from_string "last" in
+      let last_typ = field_typ last_field in
+      (last_typ, Exp.Lfield (prefix, last_field, last_typ))
   | Length ->
-      Exp.Lfield (prefix, Typ.Fieldname.Ada.from_string "length", int_typ)
+      let length_field = Typ.Fieldname.Ada.from_string "length" in
+      let length_typ = field_typ length_field in
+      (length_typ, Exp.Lfield (prefix, length_field, length_typ))
 
 
 (** An lvalue is an expression that have some location in the memory. Translate
- * on of those to an expression symbolically representing this location. *)
+ * it to an expression symbolically representing this location. *)
 let rec trans_lvalue_ ctx dest =
   match (dest :> lvalue) with
-  | `DottedName {f_prefix= (lazy prefix); f_suffix= (lazy suffix)} as name -> (
-    match record_field suffix with
-    | Some _ ->
-        let prefix_stmts, (prefix_instrs, prefix_expr) = trans_lvalue_ ctx prefix in
-        ( prefix_stmts
-        , ( prefix_instrs
-          , Exp.Lfield
-              ( prefix_expr
-              , field_name (Option.value_exn (AdaNode.p_xref name))
-              , type_of_expr ctx name ) ) )
-    | None ->
-        ([], ([], Exp.Lvar (pvar ctx name))) )
-  | `Identifier _ as name -> (
+  | `DottedName {f_prefix= (lazy prefix)} as name when is_record_field_access name -> (
+      (* In this case dotted name is an access to the record with name prefix *)
+      let typ = type_of_expr ctx prefix in
+      let field = field_name (Option.value_exn (AdaNode.p_xref name)) in
+      let prefix_stmts, (prefix_instrs, prefix_expr) = trans_lvalue_ ctx prefix in
+      let field_typ = type_of_expr ctx name in
+      match typ.desc with
+      | Typ.Tstruct _ ->
+          (prefix_stmts, (prefix_instrs, Exp.Lfield (prefix_expr, field, field_typ)))
+      | Typ.Tptr _ ->
+          (* Implicit dereference *)
+          let load_instrs, loaded = load typ (location ctx.source_file dest) prefix_expr in
+          (prefix_stmts, (prefix_instrs @ load_instrs, Exp.Lfield (loaded, field, field_typ)))
+      | _ ->
+          L.die InternalError "Variable %s should be of record type" (AdaNode.short_image prefix) )
+  | (`DottedName _ | `Identifier _) as name -> (
       let typ = type_of_expr ctx name in
       let defining_name = Option.value_exn (AdaNode.p_xref name) in
       let dest_expr = Exp.Lvar (pvar ctx name) in
@@ -305,9 +291,10 @@ let rec trans_lvalue_ ctx dest =
         | _ ->
             unimplemented "trans_lvalue for a CallExpr for assoc_list other than one ParamAssoc"
       in
-      let array_access_instrs, array_access =
-        mk_array_access ctx array_typ (location ctx.source_file name) array_dest (Index index_dest)
-      in
+      let loc = location ctx.source_file name in
+      let data_typ, field = mk_array_access ctx array_typ array_dest Data in
+      let array_access_instrs, loaded = load data_typ loc field in
+      let array_access = Exp.Lindex (loaded, index_dest) in
       ( array_dest_stmts @ index_dest_stmts
       , (array_dest_instrs @ index_dest_instrs @ array_access_instrs, array_access) )
   | `CallExpr {f_suffix= (lazy suffix)} ->
@@ -486,48 +473,39 @@ and trans_call : type a.
       unimplemented "trans_call for %s" (AdaNode.short_image call_ref)
 
 
-(** Translate a subtype indication into a pair of expressions which represent
- * the first and last value of the type.
- * Either the subtype have some constraints in which case we translate the
- * constraints, or it does not, in which case, we translate the bounds of the
- * base types *)
-and trans_subtype_indication_bounds ctx subtype_indication =
-  match SubtypeIndication.f_constraint subtype_indication with
-  | Some (`RangeConstraint {f_range= (lazy (`RangeSpec {f_range= (lazy range)}))}) ->
-      trans_bounds_ ctx (range :> [Expr.t | SubtypeIndication.t])
-  | Some _ ->
-      L.die InternalError "To translate a type bound, only range constraints apply"
-  | None -> (
-    match Name.p_referenced_decl (SubtypeIndication.f_name subtype_indication) with
-    | Some (#BaseTypeDecl.t as base_type_decl) ->
-        trans_type_bounds ctx base_type_decl
-    | _ ->
-        L.die InternalError "Cannot get the base type decl for %s"
-          (AdaNode.short_image subtype_indication) )
-
-
-(** Translate a type declaration into a pair of expressions which represent the
- * first value of the type and the last one. *)
-and trans_type_bounds ctx base_type_decl =
-  match (base_type_decl :> BaseTypeDecl.t) with
-  | `TypeDecl
-      { f_type_def=
-          (lazy (`SignedIntTypeDef {f_range= (lazy (`RangeSpec {f_range= (lazy range)}))})) } ->
-      trans_bounds_ ctx (range :> [Expr.t | SubtypeIndication.t])
-  | `TypeDecl
-      {f_type_def= (lazy (`DerivedTypeDef {f_subtype_indication= (lazy subtype_indication)}))} ->
-      trans_subtype_indication_bounds ctx subtype_indication
-  | `TypeDecl {f_type_def= (lazy (#EnumTypeDef.t as enum_type))} ->
-      let literals = EnumTypeDef.f_enum_literals enum_type |> EnumLiteralDeclList.f_list in
-      let lit_number = List.length literals in
-      ([], [], Exp.zero, Exp.int (IntLit.of_int (lit_number - 1)))
-  | `SubtypeDecl {f_subtype= (lazy subtype_indication)} ->
-      trans_subtype_indication_bounds ctx subtype_indication
-  | _ ->
-      unimplemented "trans_type_bounds for %s" (AdaNode.short_image base_type_decl)
+(** Translate a discrete type to expressions for lower and higher bounds *)
+and trans_bounds_from_discrete ctx typ =
+  let of_ada_type_expr = function
+    | Int i ->
+        ([], ([], Exp.int (IntLit.of_int i)))
+    | Lal lal_expr ->
+        trans_expr_ ctx (Tmp "") lal_expr
+  in
+  let of_ada_type_expr_minus_one = function
+    | Int i ->
+        ([], ([], Exp.int (IntLit.of_int (i - 1))))
+    | Lal lal_expr ->
+        let stmts, (instrs, exp) = of_ada_type_expr (Lal lal_expr) in
+        (stmts, (instrs, Exp.BinOp (Binop.MinusA (Some Typ.IInt), exp, Exp.one)))
+  in
+  match typ with
+  | Signed (lower, upper) ->
+      let lower_stmts, (lower_instrs, lower_exp) = of_ada_type_expr lower in
+      let upper_stmts, (upper_instrs, upper_exp) = of_ada_type_expr upper in
+      (lower_stmts @ upper_stmts, lower_instrs @ upper_instrs, lower_exp, upper_exp)
+  | Enum max | Mod max ->
+      let stmt_upper, (upper_instrs, upper_exp) = of_ada_type_expr_minus_one max in
+      (stmt_upper, upper_instrs, Exp.zero, upper_exp)
 
 
 and trans_bounds_ ctx bounds_expr =
+  let trans_bounds_from_type typ =
+    match typ with
+    | Discrete discrete ->
+        trans_bounds_from_discrete ctx discrete
+    | _ ->
+        L.die InternalError "Cannot generate a range from a non discrete type"
+  in
   match bounds_expr with
   | #Expr.t as expr -> (
     match (expr : [< Expr.t]) with
@@ -546,225 +524,18 @@ and trans_bounds_ ctx bounds_expr =
     | #lvalue as lvalue -> (
       match Name.p_referenced_decl lvalue with
       | Some (#BaseTypeDecl.t as base_type_decl) ->
-          trans_type_bounds ctx base_type_decl
+          (* In this case, the lvalue refers to a type, lets translate the
+           * type to bounds *)
+          let typ = trans_type_decl ctx.tenvs.ada_tenv base_type_decl in
+          trans_bounds_from_type typ
       | _ ->
           let stmts, (instrs, exp) = trans_expr_ ctx (Tmp "") (lvalue :> Expr.t) in
           (stmts, instrs, exp, exp) )
     | _ ->
         unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr) )
   | #SubtypeIndication.t as subtype ->
-      trans_subtype_indication_bounds ctx subtype
-
-
-(** Translate a RangeSpec which is a constraint of the form
- * "range X .. Y" to a prune node using the given expr which is expected to be
- * a rvalue *)
-and trans_range_constraint ctx lal_range typ loc expr =
-  let range = RangeSpec.f_range lal_range in
-  match range with
-  | `BoxExpr _ ->
-      (* A box expr is a placeholder, it doesn't add any contraint *)
-      []
-  | _ ->
-      let bounds_stmts, bounds_instrs, low_bound, high_bound =
-        trans_bounds_ ctx (range :> [Expr.t | SubtypeIndication.t])
-      in
-      let bounds_constraint simple_expr =
-        let instrs, exp = to_exp simple_expr in
-        let prune_node =
-          Sil.Prune
-            ( Exp.BinOp (Binop.LAnd, Exp.le low_bound exp, Exp.le exp high_bound)
-            , loc
-            , true
-            , Sil.Ik_bexp )
-        in
-        [ Block
-            { instrs= bounds_instrs @ instrs @ [prune_node]
-            ; loc
-            ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
-      in
-      bounds_stmts @ map_to_stmts ~f:bounds_constraint loc expr
-
-
-(** Translate a constraint on discriminants to prune nodes on the given expressions.
- * The expression is assumed to be an lvalue.
- * We generate constraints by accessing each discriminant that have a constraint
- * and prune the contraint with the expression in the AssocList *)
-and trans_discriminant_constraint ctx lal_discr typ loc expr =
-  let params_actual =
-    DiscriminantConstraint.f_constraints lal_discr |> AssocList.p_zip_with_params
-  in
-  let constrain_discriminant {ParamActual.param; actual} =
-    let actual_stmts, actual_expr = trans_expr_ ctx Inline actual in
-    let mk_equal lhs_exp rhs_exp =
-      (* TODO: access to the field name is temporary, waiting a lal fix for param actual *)
-      let access_field =
-        Exp.Lfield (lhs_exp, Option.value_exn (AdaNode.p_xref param) |> field_name, typ)
-      in
-      let load_instrs, load_exp = load typ loc access_field in
-      (load_instrs, Exp.eq load_exp rhs_exp)
-    in
-    let mk_prune_node simple_expr =
-      let instrs, exp = to_exp simple_expr in
-      let prune_node = Sil.Prune (exp, loc, true, Sil.Ik_bexp) in
-      [ Block
-          { instrs= instrs @ [prune_node]
-          ; loc
-          ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
-    in
-    actual_stmts @ (combine ~f:mk_equal expr actual_expr |> map_to_stmts ~f:mk_prune_node loc)
-  in
-  List.map ~f:constrain_discriminant params_actual |> List.concat
-
-
-(* Compute the first and the last expression for the array bounds *)
-and trans_array_constraints_bounds ctx constraints =
-  (* given a list of constraints, return the bounds *)
-  match (constraints :> AdaNode.t list) with
-  | [((#Expr.t | #SubtypeIndication.t) as constr)] ->
-      trans_bounds_ ctx constr
-  | [(_ as constr)] ->
-      unimplemented "trans_constraints_bounds for %s" (AdaNode.short_image constr)
-  | _ ->
-      unimplemented "trans_constraints_bounds for multi-dimentional arrays"
-
-
-(** Translate a constraint on index to prune nodes on the given expressions.
- * The expression is assumed to be an lvalue of an array *)
-and trans_array_constraints ctx constraints typ loc expr =
-  let int_typ = Typ.(mk (Tint IInt)) in
-  let bounds_stmts, bounds_instrs, first, last = trans_array_constraints_bounds ctx constraints in
-  let f simple_expr =
-    let expr_instrs, exp = to_exp simple_expr in
-    let first_field = mk_array_access ctx typ loc exp First in
-    let load_first_instrs, loaded_first = load int_typ loc first_field in
-    let last_field = mk_array_access ctx typ loc exp Last in
-    let load_last_instrs, loaded_last = load int_typ loc last_field in
-    let length_field = mk_array_access ctx typ loc exp Length in
-    let load_length_instrs, loaded_length = load int_typ loc length_field in
-    let prune_length simple_expr =
-      let length_instrs, length_exp = to_exp simple_expr in
-      [ Block
-          { instrs=
-              length_instrs @ load_length_instrs
-              @ [Sil.Prune (Exp.eq length_exp loaded_length, loc, true, Sil.Ik_bexp)]
-          ; loc
-          ; nodekind=
-              Procdesc.Node.Prune_node (true, Sil.Ik_bexp, Procdesc.Node.PruneNodeKind_InBound) }
-      ]
-    in
-    let prune_length_stmts =
-      (* To compute the length of the array, we use an if expression:
-       * if first <= last then last - first + 1 else 0 *)
-      map_to_stmts ~f:prune_length loc
-        (If
-           ( bounds_instrs
-           , Exp.le first last
-           , ( of_exp bounds_instrs
-                 (Exp.BinOp
-                    ( Binop.PlusA (Some Typ.IInt)
-                    , Exp.BinOp (Binop.MinusA (Some Typ.IInt), last, first)
-                    , Exp.one ))
-             , of_exp [] Exp.zero ) ))
-    in
-    let instrs =
-      bounds_instrs @ expr_instrs @ load_first_instrs @ load_last_instrs @ load_length_instrs
-      @ [ Sil.Prune (Exp.eq loaded_first first, loc, true, Sil.Ik_bexp)
-        ; Sil.Prune (Exp.eq loaded_last last, loc, true, Sil.Ik_bexp)
-        ; Sil.Prune (Exp.le Exp.zero loaded_length, loc, true, Sil.Ik_bexp) ]
-    in
-    prune_length_stmts
-    @ [ Block
-          { instrs
-          ; loc
-          ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
-  in
-  bounds_stmts @ map_to_stmts ~f loc expr
-
-
-(** Translate a constraint on a type to prune nodes on the given expressions.
- * The expression is assumed to be an lvalue *)
-and trans_constraint ctx lal_constraint typ loc expr =
-  match (lal_constraint : Constraint.t) with
-  | `RangeConstraint {f_range= (lazy range)} ->
-      trans_range_constraint ctx range typ loc (mk_load typ loc expr)
-  | `DiscriminantConstraint _ as discr ->
-      trans_discriminant_constraint ctx discr typ loc expr
-  | `IndexConstraint {f_constraints= (lazy (`ConstraintList {list= (lazy constraints)}))} ->
-      trans_array_constraints ctx constraints typ loc expr
-  | `DeltaConstraint _ | `DigitsConstraint _ ->
-      unimplemented "trans_constraint for %s" (AdaNode.short_image lal_constraint)
-
-
-(** Translate constraints on subtype indications to prune nodes on the given expressions.
- * The expression is assumed to be an lvalue. A subtype indication is a node
- * of the form: Integer range 1 .. 10. So we first generate the constraints of
- * the base type and we append the other constraint if it has one *)
-and trans_subtype_indication_constraint ctx subtype_indication typ loc expr =
-  match Name.p_referenced_decl (SubtypeIndication.f_name subtype_indication) with
-  | Some (#BaseTypeDecl.t as subtype_decl) -> (
-    match SubtypeIndication.f_constraint subtype_indication with
-    | Some constr ->
-        trans_constraint ctx constr typ loc expr
-    | None ->
-        trans_type_constraint ctx subtype_decl typ loc expr )
-  | _ ->
-      L.die InternalError "Cannot generate a type constraints for subtype %s"
-        (AdaNode.short_image subtype_indication)
-
-
-(** Translate constraints on an enum type to prune nodes on the given expressions.
- * The expression is assumed to be an rvalue.
- * For an enum type with 10 elements, we generate a constraint of the form:
- * 0 <= expr <= 9 *)
-and trans_enum_type_constraint ctx enum_type typ loc expr =
-  let literals = EnumTypeDef.f_enum_literals enum_type |> EnumLiteralDeclList.f_list in
-  let lit_number = List.length literals in
-  let mk_comp simple_expr =
-    (* prune the expression 0 <= expr <= (lit_number - 1) *)
-    let instrs, exp = to_exp simple_expr in
-    let comp =
-      Exp.BinOp
-        (Binop.LAnd, Exp.le Exp.zero exp, Exp.le exp (Exp.int (IntLit.of_int (lit_number - 1))))
-    in
-    let prune_node = Sil.Prune (comp, loc, true, Sil.Ik_bexp) in
-    [ Block
-        { instrs= instrs @ [prune_node]
-        ; loc
-        ; nodekind= Procdesc.Node.(Prune_node (true, Sil.Ik_bexp, PruneNodeKind_InBound)) } ]
-  in
-  map_to_stmts ~f:mk_comp loc expr
-
-
-and trans_array_type_constraints ctx array_type typ loc expr =
-  let indices = ArrayTypeDef.f_indices array_type in
-  match indices with
-  | `ConstrainedArrayIndices {f_list= (lazy (`ConstraintList {list= (lazy constraints)}))} ->
-      trans_array_constraints ctx constraints typ loc expr
-  | _ ->
-      unimplemented "trans_array_bounds for a %s" (AdaNode.short_image indices)
-
-
-(** Generate the constraints to apply on expr for any type.
- * expr should be an lvalue *)
-and trans_type_constraint ctx lal_typ typ loc expr =
-  match (lal_typ :> BaseTypeDecl.t) with
-  | `TypeDecl {f_type_def= (lazy (`SignedIntTypeDef {f_range= (lazy range)}))} ->
-      trans_range_constraint ctx range typ loc (mk_load typ loc expr)
-  | `TypeDecl
-      {f_type_def= (lazy (`DerivedTypeDef {f_subtype_indication= (lazy subtype_indication)}))} ->
-      trans_subtype_indication_constraint ctx subtype_indication typ loc expr
-  | `TypeDecl {f_type_def= (lazy (#EnumTypeDef.t as enum_type))} ->
-      trans_enum_type_constraint ctx enum_type typ loc (mk_load typ loc expr)
-  | `TypeDecl {f_type_def= (lazy (#ArrayTypeDef.t as array_type))} ->
-      trans_array_type_constraints ctx array_type typ loc expr
-  | `TypeDecl {f_type_def= (lazy (#RecordTypeDef.t as record_type))} ->
-      (* No particular constraints are applicable for a base record type *)
-      []
-  | `SubtypeDecl {f_subtype= (lazy subtype_indication)} ->
-      trans_subtype_indication_constraint ctx subtype_indication typ loc expr
-  | _ ->
-      unimplemented "trans_type_constraint for %s" (AdaNode.short_image lal_typ)
+      let typ = trans_type_expr ctx.tenvs.ada_tenv subtype in
+      trans_bounds_from_type typ
 
 
 and trans_membership_expr_ : type a.
@@ -847,7 +618,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
     when Name.p_is_call call_expr -> (
       let sorted_params =
         AssocList.p_zip_with_params assoc_list
-        |> sort_params ctx.proc_desc
+        |> sort_params
         |> List.map ~f:(fun {ParamActual.param; actual} ->
                match DefiningName.p_basic_decl param with
                | Some (#ParamSpec.t as param_spec) ->
@@ -927,11 +698,3 @@ let trans_bounds ctx bounds_expr = trans_bounds_ ctx (bounds_expr :> [Expr.t | S
 
 let trans_membership_expr ctx cont typ loc expr alternatives =
   trans_membership_expr_ ctx cont typ loc expr (alternatives :> [Expr.t | SubtypeIndication.t] list)
-
-
-let trans_type_expr_constraint ctx type_expr typ loc expr =
-  match (type_expr :> TypeExpr.t) with
-  | #SubtypeIndication.t as subtype_indication ->
-      trans_subtype_indication_constraint ctx subtype_indication typ loc expr
-  | _ ->
-      unimplemented "trans_type_expr for %s" (AdaNode.short_image type_expr)

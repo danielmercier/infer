@@ -8,13 +8,10 @@
 open! IStd
 open Libadalang
 open LalUtils
+open AdaType
 open Option.Monad_infix
 module L = Logging
 module F = Format
-
-let unimplemented fmt =
-  F.kasprintf (fun msg -> L.die InternalError "%s is not implemented" msg) fmt
-
 
 (* Type for values that can represent addresses *)
 type lvalue =
@@ -45,9 +42,12 @@ module Label = Int
 module DefiningNameMap = Caml.Map.Make (DefiningName)
 module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
 
+type tenvs = {infer_tenv: Tenv.t; ada_tenv: AdaType.tenv}
+
 (** The context is passed around for the translation of a subprograms, it contains:
   * - cfg: the current infer control flow graph of the supbrogram.
-  * - tenv: the infer type environement.
+  * - infer_tenv: the infer type environement.
+  * - ada_tenv: the ada type environement from AdaType.
   * - source_file: the infer source file in which the procedure is located.
   * - proc_desc: the infer procedure description of the one being translated.
   * - params_modes: A table that maps a defining name referencing a parameter,
@@ -66,7 +66,7 @@ module DefiningNameTable = Caml.Hashtbl.Make (DefiningName)
   *   the name of the variable is mapped to the "return" infer identifier.*)
 type context =
   { cfg: Cfg.t
-  ; tenv: Tenv.t
+  ; tenvs: tenvs
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
   ; params_modes: param_mode DefiningNameMap.t
@@ -76,9 +76,9 @@ type context =
   ; current_loop: Label.t option
   ; subst: Pvar.t DefiningNameMap.t }
 
-let mk_context cfg tenv source_file proc_desc params_modes ret_type =
+let mk_context cfg tenvs source_file proc_desc params_modes ret_type =
   { cfg
-  ; tenv
+  ; tenvs
   ; source_file
   ; proc_desc
   ; params_modes
@@ -141,6 +141,14 @@ let map_params ~f params =
   Params.f_params params |> ParamSpecList.f_list |> List.map ~f |> List.concat
 
 
+let infer_typ_of_type_decl tenvs base_type_decl =
+  trans_type_decl tenvs.ada_tenv base_type_decl |> to_infer_typ tenvs.ada_tenv tenvs.infer_tenv
+
+
+let infer_typ_of_type_expr tenvs type_expr =
+  trans_type_expr tenvs.ada_tenv type_expr |> to_infer_typ tenvs.ada_tenv tenvs.infer_tenv
+
+
 let unique_type_name type_expr =
   match
     TypeExpr.p_type_name type_expr >>= Name.p_referenced_decl
@@ -150,15 +158,6 @@ let unique_type_name type_expr =
       unique_name
   | None ->
       L.die InternalError "Cannot generate unique type name for %s" (AdaNode.short_image type_expr)
-
-
-let unique_defining_name name =
-  let plain = AdaNode.text name in
-  match DefiningName.p_basic_decl name >>| BasicDecl.p_unique_identifying_name with
-  | Some unique_name ->
-      Mangled.mangled plain unique_name
-  | None ->
-      L.die InternalError "Cannot generate unique defining name for %s" (AdaNode.short_image name)
 
 
 let get_proc_name body =
@@ -211,14 +210,6 @@ let pvar ctx node =
     | None ->
         L.die InternalError "Cannot generate a program variable for node %s"
           (AdaNode.short_image node) )
-
-
-let field_name name = AdaNode.text (name :> DefiningName.t) |> Typ.Fieldname.Ada.from_string
-
-let sort_params _ param_actuals =
-  (* TODO: This should sort the params but for now there is an issue in
-   * Libadalang with the type of ParamActual *)
-  param_actuals
 
 
 let rec pp_stmt fmt stmt =

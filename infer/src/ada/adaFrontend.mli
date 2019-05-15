@@ -7,12 +7,11 @@
 
 open! IStd
 open Libadalang
+open AdaType
 
 (* This module contains the definition of multiple types usefull for the
  * translation of ada sources. It also defines some helper functions for
  * conveniance *)
-
-val unimplemented : ('a, Format.formatter, unit, _) format4 -> 'a
 
 (** A parameter can either be passed by copy or by reference. This type is
  * used to differenciate both passing methods *)
@@ -27,9 +26,13 @@ module DefiningNameMap : Caml.Map.S with type key = DefiningName.t
 
 module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
 
+(** Type environements, one for infer types and one for more precise ada types *)
+type tenvs = {infer_tenv: Tenv.t; ada_tenv: AdaType.tenv}
+
 (** The context is passed around for the translation of a subprograms, it contains:
   * - cfg: the current infer control flow graph of the supbrogram.
-  * - tenv: the infer type environement.
+  * - infer_tenv: the infer type environement.
+  * - ada_tenv: the ada type environement from AdaType.
   * - source_file: the infer source file in which the procedure is located.
   * - proc_desc: the infer procedure description of the one being translated.
   * - params_modes: A table that maps a defining name referencing a parameter,
@@ -48,7 +51,7 @@ module DefiningNameTable : Caml.Hashtbl.S with type key = DefiningName.t
   *   the name of the variable is mapped to the "return" infer identifier.*)
 type context =
   { cfg: Cfg.t
-  ; tenv: Tenv.t
+  ; tenvs: tenvs
   ; source_file: SourceFile.t
   ; proc_desc: Procdesc.t
   ; params_modes: param_mode DefiningNameMap.t
@@ -60,7 +63,7 @@ type context =
 
 val mk_context :
      Cfg.t
-  -> Tenv.t
+  -> tenvs
   -> SourceFile.t
   -> Procdesc.t
   -> param_mode DefiningNameMap.t
@@ -114,11 +117,14 @@ val map_params :
 (** given a Params.t, create a list, calling for each parameter the function f.
  * The pair being the name of the parameter and it's type. *)
 
+val infer_typ_of_type_decl : tenvs -> [< BaseTypeDecl.t] -> Typ.t
+(** Translate a base type declaration to an infer type *)
+
+val infer_typ_of_type_expr : tenvs -> [< TypeExpr.t] -> Typ.t
+(** Translate a type expression to an infer type *)
+
 val unique_type_name : [< TypeExpr.t] -> string
 (** Given a type expression, return a string that identifies uniquely, this type *)
-
-val unique_defining_name : [< DefiningName.t] -> Mangled.t
-(** Given a defining name, return a string that identifies uniquely the name *)
 
 val pvar : context -> [< AdaNode.t] -> Pvar.t
 (** Given any AdaNode, calling p_xref, try to make a program variable of it.
@@ -131,13 +137,5 @@ val get_proc_name : [< BaseSubpBody.t] -> Typ.Procname.t
 val get_defining_name_proc : [< DefiningName.t] -> Typ.Procname.t option
 (** Return the procedure that declares the given name. Return None if the name
  * is global. *)
-
-val field_name : [< DefiningName.t] -> Typ.Fieldname.t
-(** From a defining name that represents a field in a record, return the the name
- * of this field *)
-
-val sort_params : Procdesc.t -> ParamActual.t list -> ParamActual.t list
-(** Given a param to actual mapping list, return the actuals in the order of
- * the procedure description *)
 
 val pp : Format.formatter -> stmt list -> unit

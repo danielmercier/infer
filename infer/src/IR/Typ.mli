@@ -40,6 +40,8 @@ type ikind =
   | IULongLong  (** [unsigned long long] (or [unsigned _int64] on Microsoft Visual C) *)
   | I128  (** [__int128_t] *)
   | IU128  (** [__uint128_t] *)
+  | IRange of int option * int option  (** Integer with fixed range *)
+  | IMod of int  (** Unsigned modulo type with upper bound *)
 [@@deriving compare]
 
 val equal_ikind : ikind -> ikind -> bool

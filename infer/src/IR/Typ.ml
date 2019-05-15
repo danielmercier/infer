@@ -54,6 +54,8 @@ type ikind =
   | IULongLong  (** [unsigned long long] (or [unsigned int64_] on Microsoft Visual C) *)
   | I128  (** [__int128_t] *)
   | IU128  (** [__uint128_t] *)
+  | IRange of int option * int option  (** Integer with fixed range *)
+  | IMod of int  (** Unsigned modulo type with upper bound *)
 [@@deriving compare]
 
 let equal_ikind = [%compare.equal: ikind]
@@ -87,6 +89,16 @@ let ikind_to_string = function
       "__int128_t"
   | IU128 ->
       "__uint128_t"
+  | IRange (Some lower, Some upper) ->
+      F.sprintf "integer range %d .. %d" lower upper
+  | IRange (Some lower, None) ->
+      F.sprintf "integer range %d .. +oo" lower
+  | IRange (None, Some upper) ->
+      F.sprintf "integer range -oo .. %d" upper
+  | IRange (None, None) ->
+      F.sprintf "integer range -oo .. +oo"
+  | IMod upper ->
+      F.sprintf "mod %d" upper
 
 
 let width_of_ikind {IntegerWidths.char_width; short_width; int_width; long_width; longlong_width} =
@@ -105,12 +117,14 @@ let width_of_ikind {IntegerWidths.char_width; short_width; int_width; long_width
       longlong_width
   | I128 | IU128 ->
       128
+  | IRange _ | IMod _ ->
+      int_width
 
 
 let ikind_is_unsigned = function
-  | IBool | IUChar | IUShort | IUInt | IULong | IULongLong | IU128 ->
+  | IBool | IUChar | IUShort | IUInt | IULong | IULongLong | IU128 | IMod _ ->
       true
-  | ISChar | IChar | IShort | IInt | ILong | ILongLong | I128 ->
+  | ISChar | IChar | IShort | IInt | ILong | ILongLong | I128 | IRange _ ->
       false
 
 

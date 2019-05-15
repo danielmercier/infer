@@ -24,25 +24,36 @@ type lvalue =
   | StringLiteral.t
   | TargetName.t ]
 
+val unique_defining_name : [< DefiningName.t] -> Mangled.t
+(** Given a defining name, return a string that identifies uniquely the name *)
+
+val field_name : [< DefiningName.t] -> Typ.Fieldname.t
+(** From a defining name that represents a field in a record, return the the name
+ * of this field *)
+
 val is_access : Identifier.t -> bool
 (** Return true if the identifier is refering to 'Access *)
-
-val lvalue_type_expr : [< lvalue] -> TypeExpr.t
-(** Return the type expression for an lvalue. When calling p_type_expression on
- * an expression, the BaseType is returned, but not the more precise type.
- *
- * For example for the following declaration:
- * I : Integer range 1 .. 10
- *
- * If p_type_expression is called on I, the type Integer is returned, so we
- * lose the constraint on Integer.
- *
- * This function can be applied on a lvalue and returns the more precise type
- * as a TypeExpr.
- * *)
 
 val is_array_type : [< TypeExpr.t] -> bool
 (** Check if the given TypeExpr is a type expression of an array *)
 
 val is_record_type : [< TypeExpr.t] -> bool
 (** Check if the given TypeExpr is a type expression of a record *)
+
+val is_elementary_type : [< BaseTypeDecl.t] -> bool
+(** Return true if the given type is elementary:
+  *   - scalar
+  *   - real
+  *   - access *)
+
+val is_composite_type : [< BaseTypeDecl.t] -> bool
+(** Return true if the given type is composite (not elementary)
+  *   - record
+  *   - array *)
+
+val sort_params : ParamActual.t list -> ParamActual.t list
+(** Given a param to actual mapping list, return the actuals in the order of
+ * the procedure description *)
+
+val is_record_field_access : [< DottedName.t] -> bool
+(** Given a dotted name, return true if it represents an access to a record *)

@@ -7,16 +7,17 @@
 
 open! IStd
 open Libadalang
+open AdaUtils
 open LalUtils
 open AdaFrontend
-open AdaTransType
 open AdaTransExpr
+open AdaType
 open Option.Monad_infix
 module L = Logging
 
 (** Translate an assignment to a list of statements *)
-let trans_assignment ctx orig_node lal_type_expr dest_instrs dest_expr expr =
-  let typ = trans_type_expr ctx.tenv lal_type_expr in
+let trans_assignment ctx orig_node precise_typ dest_instrs dest_expr expr =
+  let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv precise_typ in
   let loc = location ctx.source_file orig_node in
   let f simple_expr =
     let expr_instrs, exp = to_exp simple_expr in
@@ -33,17 +34,20 @@ let trans_simple_stmt ctx simple_stmt =
   let loc = location ctx.source_file simple_stmt in
   match (simple_stmt :> SimpleStmt.t) with
   | `AssignStmt {f_dest= (lazy dest); f_expr= (lazy expr)} ->
-      let lal_type_expr = lvalue_type_expr dest in
+      let precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv dest in
       let dest_stmts, (dest_instrs, dest_expr) = trans_lvalue ctx dest in
       let stmts, result = trans_expr ctx Inline expr in
       dest_stmts @ stmts
-      @ trans_assignment ctx simple_stmt lal_type_expr dest_instrs dest_expr result
+      @ trans_assignment ctx simple_stmt precise_typ dest_instrs dest_expr result
   | `ReturnStmt {f_return_expr= (lazy (Some expr))} -> (
     match ctx.ret_type with
     | Some type_expr ->
         let return = Exp.Lvar (Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc)) in
         let stmts, result = trans_expr ctx Inline expr in
-        stmts @ trans_assignment ctx simple_stmt type_expr [] return result
+        stmts
+        @ trans_assignment ctx simple_stmt
+            (trans_type_expr ctx.tenvs.ada_tenv type_expr)
+            [] return result
     | None ->
         L.die InternalError "The function should have a return type" )
   | `ReturnStmt {f_return_expr= (lazy None)} ->
@@ -251,7 +255,7 @@ and trans_composite_stmt ctx composite_stmt =
       ; f_then_stmts= (lazy then_stmts)
       ; f_alternatives= (lazy (`ElsifStmtPartList {list= (lazy alternatives)}))
       ; f_else_stmts= (lazy else_stmts) } ->
-      (** An if statement in Ada have some alternatives, but translate this like
+      (* An if statement in Ada have some alternatives, but translate this like
        * if A then S1 elsif B then S2 else S3
        * to:
        *  if A then S1 else {if B then S2 else S3}
@@ -269,7 +273,7 @@ and trans_composite_stmt ctx composite_stmt =
       trans_if_stmt ctx (composite_stmt :> AdaNode.t) cond_expr trans_then_stmts (aux alternatives)
   | (`BeginBlock {f_stmts= (lazy handled_stmts)} | `DeclBlock {f_stmts= (lazy handled_stmts)}) as
     block_stmt ->
-      (** We translate the statements inside the block *)
+      (* We translate the statements inside the block *)
       let stmts = trans_stmts ctx (HandledStmts.f_stmts handled_stmts) in
       let decl_stmts =
         (* If the block is a declarative block, we need to translate the declarations *)
@@ -281,7 +285,7 @@ and trans_composite_stmt ctx composite_stmt =
       in
       decl_stmts @ stmts
   | `ExtendedReturnStmt {f_decl= (lazy decl); f_stmts= (lazy handled_stmts)} ->
-      (** An extended return statement is a statement that defines a variable
+      (* An extended return statement is a statement that defines a variable
        * that will then be returned.
        *
        * This is translated by adding in the subst map inside the context, the
@@ -304,7 +308,7 @@ and trans_composite_stmt ctx composite_stmt =
   | `CaseStmt
       { f_expr= (lazy expr)
       ; f_alternatives= (lazy (`CaseStmtAlternativeList {list= (lazy alternatives)})) } ->
-      (** A case statement is translated into a succession of if statements.
+      (* A case statement is translated into a succession of if statements.
        *
        * case X when A => S1 when B => S2 when others => S3
        *
@@ -383,17 +387,56 @@ and trans_stmt ctx stmt =
       []
 
 
-and trans_array_decl ctx decl names array_type =
+and trans_array_decl ctx decl names typ indices =
   (* When an array is declared in Ada, there is an implicit allocation.
    * Translate this to a malloc call *)
-  let typ = trans_type_expr ctx.tenv array_type in
   let loc = location ctx.source_file decl in
-  let int_typ = Typ.(mk (Tint IInt)) in
-  let f id =
-    let pvar = pvar ctx id in
-    let length_field = mk_array_access ctx typ loc (Exp.Lvar pvar) Length in
+  let index_stmts, index_instrs, index_first, index_last =
+    match indices with
+    | [(_, index_typ)] ->
+        trans_bounds_from_discrete ctx index_typ
+    | _ ->
+        unimplemented "multidimensional array"
+  in
+  let f name =
+    let pvar = pvar ctx name in
+    let first_typ, first_field = mk_array_access ctx typ (Exp.Lvar pvar) First in
+    let last_typ, last_field = mk_array_access ctx typ (Exp.Lvar pvar) Last in
+    let length_typ, length_field = mk_array_access ctx typ (Exp.Lvar pvar) Length in
+    let data_typ, data_field = mk_array_access ctx typ (Exp.Lvar pvar) Data in
+    let store_length simple_expr =
+      let length_instrs, length_exp = to_exp simple_expr in
+      [ Block
+          { instrs= length_instrs @ [Sil.Store (length_field, length_typ, length_exp, loc)]
+          ; loc
+          ; nodekind= Procdesc.Node.Stmt_node (Call "assign") } ]
+    in
+    let length_stmts =
+      (* To compute the length of the array, we use an if expression:
+       * if first <= last then last - first + 1 else 0 *)
+      map_to_stmts ~f:store_length loc
+        (If
+           ( index_instrs
+           , Exp.le index_first index_last
+           , ( of_exp index_instrs
+                 (Exp.BinOp
+                    ( Binop.PlusA (Some Typ.IInt)
+                    , Exp.BinOp (Binop.MinusA (Some Typ.IInt), index_last, index_first)
+                    , Exp.one ))
+             , of_exp [] Exp.zero ) ))
+    in
+    let stores_stmts =
+      index_stmts @ length_stmts
+      @ [ Block
+            { instrs=
+                index_instrs
+                @ [ Sil.Store (first_field, first_typ, index_first, loc)
+                  ; Sil.Store (last_field, last_typ, index_last, loc) ]
+            ; loc
+            ; nodekind= Procdesc.Node.Stmt_node (Call "assign") } ]
+    in
     let id = Ident.(create_fresh knormal) in
-    let load_length = Sil.Load (id, length_field, int_typ, loc) in
+    let load_length = Sil.Load (id, length_field, length_typ, loc) in
     (* Call a malloc to allocate some space for the array.
      * TODO: Instead of calling malloc, we should call our own builtin for array
      *       declaration *)
@@ -402,15 +445,18 @@ and trans_array_decl ctx decl names array_type =
       Sil.Call
         ( (malloc_res, typ)
         , Exp.Const (Const.Cfun BuiltinDecl.malloc)
-        , [(Exp.Var id, int_typ)]
+        , [(Exp.Var id, length_typ)]
         , loc
         , CallFlags.default )
     in
-    let data_field = mk_array_access ctx typ loc (Exp.Lvar pvar) Data in
-    let store_malloc_result = Sil.Store (data_field, typ, Exp.Var malloc_res, loc) in
-    [load_length; allocate; store_malloc_result]
+    let store_malloc_result = Sil.Store (data_field, data_typ, Exp.Var malloc_res, loc) in
+    stores_stmts
+    @ [ Block
+          { instrs= [load_length; allocate; store_malloc_result]
+          ; loc
+          ; nodekind= Procdesc.Node.Stmt_node (Call "malloc") } ]
   in
-  [Block {instrs= List.concat_map ~f names; loc; nodekind= Procdesc.Node.(Stmt_node DeclStmt)}]
+  List.concat_map ~f names
 
 
 and trans_decl ctx decl =
@@ -423,17 +469,16 @@ and trans_decl ctx decl =
       { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
       ; f_type_expr= (lazy type_expr)
       ; f_default_expr= (lazy default_expr) } ->
-      let typ = trans_type_expr ctx.tenv type_expr in
+      let ada_typ = trans_type_expr ctx.tenvs.ada_tenv type_expr in
+      let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+      (*let typ = infer_typ_of_type_expr ctx.tenvs type_expr in*)
       let loc = location ctx.source_file decl in
-      let type_constraint_stmts =
-        let f id =
-          let pvar = pvar ctx id in
-          trans_type_expr_constraint ctx type_expr typ loc (of_exp [] (Exp.Lvar pvar))
-        in
-        List.concat_map ~f names
-      in
       let array_decl_stmts =
-        if is_array_type type_expr then trans_array_decl ctx decl names type_expr else []
+        match ada_typ with
+        | Array (_, indices, _) ->
+            trans_array_decl ctx decl names typ indices
+        | _ ->
+            []
       in
       let store_default_stmts =
         (* Check if there is a default expression and store it if there is one *)
@@ -455,7 +500,7 @@ and trans_decl ctx decl =
         | None ->
             []
       in
-      type_constraint_stmts @ array_decl_stmts @ store_default_stmts
+      array_decl_stmts @ store_default_stmts
   | _ ->
       []
 

@@ -7,8 +7,9 @@
 
 open! IStd
 open Libadalang
+open AdaUtils
+open LalUtils
 open AdaFrontend
-open AdaTransType
 open AdaTransStmt
 open AdaCfg
 open Option.Monad_infix
@@ -16,14 +17,14 @@ module L = Logging
 
 (** Translate a subprogram spec to an infer procedure description, and return
  * a newly created context *)
-let trans_spec cfg tenv source_file subp_body =
+let trans_spec cfg tenvs source_file subp_body =
   let proc_name = get_proc_name subp_body in
   let subp_spec = BaseSubpBody.f_subp_spec subp_body in
   let formals =
     SubpSpec.f_subp_params subp_spec
     >>| map_params ~f:(fun (name, typ, mode) ->
             ( unique_defining_name name
-            , let ir_typ = trans_type_expr tenv typ in
+            , let ir_typ = infer_typ_of_type_expr tenvs typ in
               match param_mode typ mode with
               | Copy ->
                   ir_typ
@@ -43,7 +44,9 @@ let trans_spec cfg tenv source_file subp_body =
     |> Option.value ~default:DefiningNameMap.empty
   in
   let ret_type_expr = SubpSpec.f_subp_returns subp_spec in
-  let ret_type = ret_type_expr >>| trans_type_expr tenv |> Option.value ~default:Typ.void in
+  let ret_type =
+    ret_type_expr >>| infer_typ_of_type_expr tenvs |> Option.value ~default:Typ.void
+  in
   let proc_attributes =
     { (ProcAttributes.default source_file proc_name) with
       formals
@@ -52,7 +55,7 @@ let trans_spec cfg tenv source_file subp_body =
     ; ret_type }
   in
   let proc_desc = Cfg.create_proc_desc cfg proc_attributes in
-  mk_context cfg tenv source_file proc_desc params_modes ret_type_expr
+  mk_context cfg tenvs source_file proc_desc params_modes ret_type_expr
 
 
 (** Translate a subprogram body into a list of statements.
@@ -76,8 +79,8 @@ let trans_subp_body ctx subp =
 (** Translate a subprogram into a list of statements by first create the
  * context for the translation of this subprogram, and then calling the
  * right function for the translation of the actual subprogram type *)
-let trans_subp cfg tenv source_file subp =
-  let ctx = trans_spec cfg tenv source_file subp in
+let trans_subp cfg tenvs source_file subp =
+  let ctx = trans_spec cfg tenvs source_file subp in
   match (subp :> BaseSubpBody.t) with
   | `SubpBody _ as subp_body ->
       trans_subp_body ctx subp_body
@@ -87,26 +90,26 @@ let trans_subp cfg tenv source_file subp =
 
 (** Translate all the subprograms in the given file.
  * This is imperative, the capture is stored in disk *)
-let trans_file lal_ctx cfg tenv source_filename =
+let trans_file lal_ctx cfg tenvs source_filename =
   let source_file = SourceFile.create source_filename in
   let unit = AnalysisContext.get_from_file lal_ctx source_filename in
   match AnalysisUnit.root unit with
   | Some root ->
       let f = function
         | #BaseSubpBody.t as subp ->
-            trans_subp cfg tenv source_file subp
+            trans_subp cfg tenvs source_file subp
         | _ ->
             ()
       in
       (* Iterate over all nodes to find the subprograms *)
       AdaNode.iter f root ;
       (* When done with the translation of the subprograms, register them *)
-      SourceFiles.add source_file cfg (Tenv.FileLocal tenv) None
+      SourceFiles.add source_file cfg (Tenv.FileLocal tenvs.infer_tenv) None
   | None ->
       L.die InternalError "No root node for source file: %s" source_filename
 
 
 let translate lal_ctx source_files =
   let cfg = Cfg.create () in
-  let tenv = Tenv.create () in
-  List.iter ~f:(trans_file lal_ctx cfg tenv) source_files
+  let tenvs = {infer_tenv= Tenv.create (); ada_tenv= AdaType.create ()} in
+  List.iter ~f:(trans_file lal_ctx cfg tenvs) source_files
