@@ -24,7 +24,15 @@ let trans_assignment ctx orig_node precise_typ dest_instrs dest_expr expr =
     let assignment = Sil.Store (dest_expr, typ, exp, loc) in
     let instrs = dest_instrs @ expr_instrs @ [assignment] in
     let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
-    [Block {instrs; loc; nodekind}]
+    let range_check_stmts =
+      match precise_typ with
+      | Discrete discrete ->
+          let load_instrs, loaded = load typ loc dest_expr in
+          range_check ctx loc discrete (dest_instrs @ load_instrs) loaded
+      | _ ->
+          []
+    in
+    Block {instrs; loc; nodekind} :: range_check_stmts
   in
   map_to_stmts ~f loc expr
 
@@ -471,8 +479,6 @@ and trans_decl ctx decl =
       ; f_default_expr= (lazy default_expr) } ->
       let ada_typ = trans_type_expr ctx.tenvs.ada_tenv type_expr in
       let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
-      (*let typ = infer_typ_of_type_expr ctx.tenvs type_expr in*)
-      let loc = location ctx.source_file decl in
       let array_decl_stmts =
         match ada_typ with
         | Array (_, indices, _) ->
@@ -484,19 +490,12 @@ and trans_decl ctx decl =
         (* Check if there is a default expression and store it if there is one *)
         match default_expr with
         | Some default_expr ->
-            let assign_ids simple_expr =
-              let instrs, expr = to_exp simple_expr in
-              let f id =
-                let pvar = pvar ctx id in
-                Sil.Store (Lvar pvar, typ, expr, loc)
-              in
-              [ Block
-                  { instrs= instrs @ List.map ~f names
-                  ; loc
-                  ; nodekind= Procdesc.Node.(Stmt_node DeclStmt) } ]
-            in
             let stmts, expr = trans_expr ctx Inline default_expr in
-            stmts @ map_to_stmts ~f:assign_ids loc expr
+            let f id =
+              let pvar = pvar ctx id in
+              trans_assignment ctx decl ada_typ [] (Exp.Lvar pvar) expr
+            in
+            stmts @ List.concat_map ~f names
         | None ->
             []
       in

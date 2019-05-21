@@ -245,22 +245,59 @@ let rec mk_array_access ctx array_typ prefix array_access =
 (** An lvalue is an expression that have some location in the memory. Translate
  * it to an expression symbolically representing this location. *)
 let rec trans_lvalue_ ctx dest =
+  let deref typ loc instrs exp =
+    (* Insert the access check when dereferencing a value of pointer type *)
+    let access_check_stmts = access_check loc instrs exp in
+    let instrs, loaded = load typ loc exp in
+    (access_check_stmts, (instrs, loaded))
+  in
   match (dest :> lvalue) with
-  | `DottedName {f_prefix= (lazy prefix)} as name when is_record_field_access name -> (
+  | `DottedName {f_prefix= (lazy prefix)} as name when is_record_field_access name ->
       (* In this case dotted name is an access to the record with name prefix *)
-      let typ = type_of_expr ctx prefix in
-      let field = field_name (Option.value_exn (AdaNode.p_xref name)) in
+      let rec aux acc_stmts instrs exp = function
+        | Record record_name ->
+            let field = field_name (Option.value_exn (AdaNode.p_xref name)) in
+            let any_field =
+              match lookup_field ctx.tenvs.ada_tenv record_name field with
+              | Some (Field _ as any_field) | Some (Discriminant _ as any_field) ->
+                  any_field
+              | None ->
+                  L.die InternalError "Cannot get the field %a" Typ.Fieldname.pp field
+            in
+            let ada_field_typ = field_typ any_field in
+            let check_stmts =
+              (* When accessing a record field, we want to check that we are
+               * allowed to perform this access. First lookup the field, and if
+               * is a regular field, convert all necessary conditions to
+               * access the nodes to prune nodes on the accessed record *)
+              match any_field with
+              | Field {condition} ->
+                  let loc = location ctx.source_file name in
+                  let discriminant_checks =
+                    List.concat_map
+                      ~f:(discriminant_check ctx loc record_name instrs exp)
+                      condition
+                  in
+                  discriminant_checks
+              | Discriminant _ ->
+                  (* No particular condition are applied to a discriminant field *)
+                  []
+            in
+            let field_typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_field_typ in
+            (acc_stmts @ check_stmts, (instrs, Exp.Lfield (exp, field, field_typ)))
+        | Access root_typ ->
+            (* Implicit dereference *)
+            let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv root_typ in
+            let access_check_stmts, (load_instrs, loaded) =
+              deref typ (location ctx.source_file dest) instrs exp
+            in
+            aux (acc_stmts @ access_check_stmts) load_instrs loaded root_typ
+        | _ ->
+            L.die InternalError "Variable %s should be of record type" (AdaNode.short_image prefix)
+      in
+      let typ = trans_type_of_expr ctx.tenvs.ada_tenv prefix in
       let prefix_stmts, (prefix_instrs, prefix_expr) = trans_lvalue_ ctx prefix in
-      let field_typ = type_of_expr ctx name in
-      match typ.desc with
-      | Typ.Tstruct _ ->
-          (prefix_stmts, (prefix_instrs, Exp.Lfield (prefix_expr, field, field_typ)))
-      | Typ.Tptr _ ->
-          (* Implicit dereference *)
-          let load_instrs, loaded = load typ (location ctx.source_file dest) prefix_expr in
-          (prefix_stmts, (prefix_instrs @ load_instrs, Exp.Lfield (loaded, field, field_typ)))
-      | _ ->
-          L.die InternalError "Variable %s should be of record type" (AdaNode.short_image prefix) )
+      aux prefix_stmts prefix_instrs prefix_expr typ
   | (`DottedName _ | `Identifier _) as name -> (
       let typ = type_of_expr ctx name in
       let defining_name = Option.value_exn (AdaNode.p_xref name) in
@@ -273,30 +310,52 @@ let rec trans_lvalue_ ctx dest =
           ([], ([], dest_expr)) )
   | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
       let stmts, (instrs, dest_expr) = trans_lvalue_ ctx prefix in
-      let load_instrs, load_expr =
-        load (type_of_expr ctx prefix) (location ctx.source_file dest) dest_expr
+      let access_check_stmts, (load_instrs, load_expr) =
+        deref (type_of_expr ctx prefix) (location ctx.source_file dest) instrs dest_expr
       in
-      (stmts, (instrs @ load_instrs, load_expr))
+      (access_check_stmts @ stmts, (instrs @ load_instrs, load_expr))
   | `CallExpr {f_name= (lazy name); f_suffix= (lazy (`AssocList {list= (lazy assoc_list)}))} ->
-      (* Since we are evaluating an lvalue, consider this as an access to an
-       * array. An array is compiled to a record with the field data being the
-       * real array. *)
-      let array_typ = type_of_expr ctx name in
-      let array_dest_stmts, (array_dest_instrs, array_dest) = trans_lvalue_ ctx name in
-      (* The destination of the array should be loaded to get it's base address *)
-      let index_dest_stmts, (index_dest_instrs, index_dest) =
-        match assoc_list with
-        | [`ParamAssoc {f_designator= (lazy None); f_r_expr= (lazy index_expr)}] ->
-            trans_expr_ ctx (Tmp "index") (index_expr :> Expr.t)
-        | _ ->
-            unimplemented "trans_lvalue for a CallExpr for assoc_list other than one ParamAssoc"
-      in
       let loc = location ctx.source_file name in
-      let data_typ, field = mk_array_access ctx array_typ array_dest Data in
-      let array_access_instrs, loaded = load data_typ loc field in
-      let array_access = Exp.Lindex (loaded, index_dest) in
-      ( array_dest_stmts @ index_dest_stmts
-      , (array_dest_instrs @ index_dest_instrs @ array_access_instrs, array_access) )
+      let rec aux acc_stmts array_dest_instrs array_dest typ =
+        match typ with
+        | Array (_, [(_, index_typ)], _) ->
+            (* Since we are evaluating an lvalue, consider this as an access to an
+             * array. An array is compiled to a record with the field data being the
+             * real array. *)
+            let array_typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv typ in
+            let index_dest_stmts, (index_dest_instrs, index_dest) =
+              match assoc_list with
+              | [`ParamAssoc {f_designator= (lazy None); f_r_expr= (lazy index_expr)}] ->
+                  trans_expr_ ctx (Tmp "index") (index_expr :> Expr.t)
+              | _ ->
+                  unimplemented
+                    "trans_lvalue for a CallExpr for assoc_list other than one ParamAssoc"
+            in
+            let data_typ, field = mk_array_access ctx array_typ array_dest Data in
+            let array_access_instrs, loaded = load data_typ loc field in
+            let array_access = Exp.Lindex (loaded, index_dest) in
+            let index_check_stmts =
+              (* When accessing an index of an array, we want to be sure that it
+               * is between first and last, this is performed by adding a this check *)
+              array_index_check ctx loc index_typ index_dest_instrs index_dest
+            in
+            ( acc_stmts @ index_dest_stmts @ index_check_stmts
+            , (array_dest_instrs @ index_dest_instrs @ array_access_instrs, array_access) )
+        | Array _ ->
+            unimplemented "trans_lvalue for multidimensional array"
+        | Access ada_typ ->
+            (* Implicit dereference *)
+            let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+            let access_check_stmts, (load_instrs, loaded) =
+              deref typ (location ctx.source_file dest) array_dest_instrs array_dest
+            in
+            aux (acc_stmts @ access_check_stmts) load_instrs loaded ada_typ
+        | _ ->
+            L.die InternalError "Unexpected non array type for %s" (AdaNode.short_image dest)
+      in
+      let array_precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv name in
+      let array_dest_stmts, (array_dest_instrs, array_dest) = trans_lvalue_ ctx name in
+      aux array_dest_stmts array_dest_instrs array_dest array_precise_typ
   | `CallExpr {f_suffix= (lazy suffix)} ->
       unimplemented "trans_lvalue for CallExpr with suffix %s" (AdaNode.short_image suffix)
   | _ as expr ->
@@ -473,25 +532,27 @@ and trans_call : type a.
       unimplemented "trans_call for %s" (AdaNode.short_image call_ref)
 
 
+(** Get the expression from either an int or a lal expression *)
+and of_int_or_lal_expr ctx = function
+  | Int i ->
+      ([], ([], Exp.int (IntLit.of_int i)))
+  | Lal lal_expr ->
+      trans_expr_ ctx (Tmp "") lal_expr
+
+
 (** Translate a discrete type to expressions for lower and higher bounds *)
 and trans_bounds_from_discrete ctx typ =
-  let of_ada_type_expr = function
-    | Int i ->
-        ([], ([], Exp.int (IntLit.of_int i)))
-    | Lal lal_expr ->
-        trans_expr_ ctx (Tmp "") lal_expr
-  in
   let of_ada_type_expr_minus_one = function
     | Int i ->
         ([], ([], Exp.int (IntLit.of_int (i - 1))))
     | Lal lal_expr ->
-        let stmts, (instrs, exp) = of_ada_type_expr (Lal lal_expr) in
+        let stmts, (instrs, exp) = of_int_or_lal_expr ctx (Lal lal_expr) in
         (stmts, (instrs, Exp.BinOp (Binop.MinusA (Some Typ.IInt), exp, Exp.one)))
   in
   match typ with
   | Signed (lower, upper) ->
-      let lower_stmts, (lower_instrs, lower_exp) = of_ada_type_expr lower in
-      let upper_stmts, (upper_instrs, upper_exp) = of_ada_type_expr upper in
+      let lower_stmts, (lower_instrs, lower_exp) = of_int_or_lal_expr ctx lower in
+      let upper_stmts, (upper_instrs, upper_exp) = of_int_or_lal_expr ctx upper in
       (lower_stmts @ upper_stmts, lower_instrs @ upper_instrs, lower_exp, upper_exp)
   | Enum max | Mod max ->
       let stmt_upper, (upper_instrs, upper_exp) = of_ada_type_expr_minus_one max in
@@ -688,6 +749,72 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       return ctx cont typ loc dest_stmts (of_exp (dest_instrs @ load_instrs) load_exp)
   | _ as expr ->
       unimplemented "trans_expr for %s" (AdaNode.short_image expr)
+
+
+and discrete_check ctx kind loc discrete_typ instrs exp =
+  let bounds_stmts, bounds_instrs, lower_exp, upper_exp =
+    trans_bounds_from_discrete ctx discrete_typ
+  in
+  let in_between = Exp.BinOp (Binop.LAnd, Exp.le lower_exp exp, Exp.le exp upper_exp) in
+  let prune = Sil.Prune (in_between, loc, true, Sil.Ik_bexp) in
+  bounds_stmts
+  @ [ Block
+        { instrs= bounds_instrs @ instrs @ [prune]
+        ; loc
+        ; nodekind=
+            Procdesc.Node.Prune_node (true, Sil.Ik_bexp, Procdesc.Node.PruneNodeKind_AdaCheck kind)
+        } ]
+
+
+and array_index_check ctx loc index_typ index_instrs index_exp =
+  discrete_check ctx Procdesc.Node.IndexCheck loc index_typ index_instrs index_exp
+
+
+and range_check ctx loc discrete_typ instrs exp =
+  discrete_check ctx Procdesc.Node.RangeCheck loc discrete_typ instrs exp
+
+
+and access_check loc instrs exp =
+  let not_null = Exp.ne exp Exp.null in
+  let prune = Sil.Prune (not_null, loc, true, Sil.Ik_bexp) in
+  [ Block
+      { instrs= instrs @ [prune]
+      ; loc
+      ; nodekind=
+          Procdesc.Node.Prune_node
+            (true, Sil.Ik_bexp, Procdesc.Node.PruneNodeKind_AdaCheck AccessCheck) } ]
+
+
+and discriminant_check ctx loc record_name instrs exp (discriminant, condition) =
+  let ada_field_typ =
+    Option.value_exn (lookup_field ctx.tenvs.ada_tenv record_name discriminant >>| field_typ)
+  in
+  let field_typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_field_typ in
+  let access_discr = Exp.Lfield (exp, discriminant, field_typ) in
+  let load_instrs, loaded = load field_typ loc access_discr in
+  let stmts, (check_instrs, check) =
+    match condition with
+    | Equal expr ->
+        let stmts, (instrs, exp) = of_int_or_lal_expr ctx expr in
+        (stmts, (instrs, Exp.eq loaded exp))
+    | InRange (lower, upper) ->
+        let lower_stmts, (lower_instrs, lower_exp) = of_int_or_lal_expr ctx lower in
+        let upper_stmts, (upper_instrs, upper_exp) = of_int_or_lal_expr ctx upper in
+        ( lower_stmts @ upper_stmts
+        , ( lower_instrs @ upper_instrs
+          , Exp.BinOp (Binop.LAnd, Exp.le lower_exp loaded, Exp.le loaded upper_exp) ) )
+    | LessThan expr ->
+        let stmts, (instrs, exp) = of_int_or_lal_expr ctx expr in
+        (stmts, (instrs, Exp.lt loaded exp))
+  in
+  let prune = Sil.Prune (check, loc, true, Sil.Ik_bexp) in
+  stmts
+  @ [ Block
+        { instrs= instrs @ load_instrs @ check_instrs @ [prune]
+        ; loc
+        ; nodekind=
+            Procdesc.Node.Prune_node
+              (true, Sil.Ik_bexp, Procdesc.Node.PruneNodeKind_AdaCheck DiscriminantCheck) } ]
 
 
 let trans_lvalue ctx dest = trans_lvalue_ ctx (dest :> lvalue)

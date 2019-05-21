@@ -73,6 +73,8 @@ module Node = struct
     | UnaryOperator
   [@@deriving compare]
 
+  type ada_check = RangeCheck | IndexCheck | AccessCheck | DiscriminantCheck [@@deriving compare]
+
   type prune_node_kind =
     | PruneNodeKind_ExceptionHandler
     | PruneNodeKind_FalseBranch
@@ -81,6 +83,7 @@ module Node = struct
     | PruneNodeKind_MethodBody
     | PruneNodeKind_NotNull
     | PruneNodeKind_TrueBranch
+    | PruneNodeKind_AdaCheck of ada_check
   [@@deriving compare]
 
   type nodekind =
@@ -335,6 +338,14 @@ module Node = struct
         "Not null"
     | PruneNodeKind_TrueBranch ->
         "true Branch"
+    | PruneNodeKind_AdaCheck IndexCheck ->
+        "IndexCheck"
+    | PruneNodeKind_AdaCheck RangeCheck ->
+        "RangeCheck"
+    | PruneNodeKind_AdaCheck AccessCheck ->
+        "AccessCheck"
+    | PruneNodeKind_AdaCheck DiscriminantCheck ->
+        "DiscriminantCheck"
 
 
   (** Return a description of the cfg node *)

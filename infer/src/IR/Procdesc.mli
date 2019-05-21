@@ -69,6 +69,8 @@ module Node : sig
     | ThrowNPE
     | UnaryOperator
 
+  type ada_check = RangeCheck | IndexCheck | AccessCheck | DiscriminantCheck
+
   type prune_node_kind =
     | PruneNodeKind_ExceptionHandler
     | PruneNodeKind_FalseBranch
@@ -77,6 +79,7 @@ module Node : sig
     | PruneNodeKind_MethodBody
     | PruneNodeKind_NotNull
     | PruneNodeKind_TrueBranch
+    | PruneNodeKind_AdaCheck of ada_check
 
   (** kind of cfg node *)
   type nodekind =

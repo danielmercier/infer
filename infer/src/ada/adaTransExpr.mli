@@ -118,5 +118,9 @@ val trans_membership_expr :
   *
   * This is translated by calling trans_bounds on each element of this list *)
 
+val range_check : context -> Location.t -> AdaType.discrete -> Sil.instr list -> Exp.t -> stmt list
+(** Return a stmt corresponding to a range check of the given infer expr and the
+ * given discrete type *)
+
 val type_of_expr : context -> [< Expr.t] -> Typ.t
 (** Compute the type of the given lal expression *)
