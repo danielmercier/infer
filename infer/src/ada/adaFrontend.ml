@@ -157,7 +157,9 @@ let unique_type_name type_expr =
   | Some unique_name ->
       unique_name
   | None ->
-      L.die InternalError "Cannot generate unique type name for %s" (AdaNode.short_image type_expr)
+      (* If not, use the short_image of the node. The short image contains the
+       * position of the node *)
+      AdaNode.short_image type_expr
 
 
 let get_proc_name body =
