@@ -467,6 +467,24 @@ and trans_array_decl ctx decl names typ indices =
   List.concat_map ~f names
 
 
+(** Translate the default values to assign to the given names depending on the
+ * the ada type *)
+and trans_default_decl ctx decl ada_typ names =
+  match ada_typ with
+  | Array (_, indices, _) ->
+      let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+      trans_array_decl ctx decl names typ indices
+  | Access _ ->
+      (* An access type is always initialized by default to null *)
+      let f id =
+        let pvar = pvar ctx id in
+        trans_assignment ctx decl ada_typ [] (Exp.Lvar pvar) (of_exp [] Exp.null)
+      in
+      List.concat_map ~f names
+  | _ ->
+      []
+
+
 and trans_decl ctx decl =
   match (decl :> AdaNode.t) with
   | `ObjectDecl
@@ -478,14 +496,6 @@ and trans_decl ctx decl =
       ; f_type_expr= (lazy type_expr)
       ; f_default_expr= (lazy default_expr) } ->
       let ada_typ = trans_type_expr ctx.tenvs.ada_tenv type_expr in
-      let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
-      let array_decl_stmts =
-        match ada_typ with
-        | Array (_, indices, _) ->
-            trans_array_decl ctx decl names typ indices
-        | _ ->
-            []
-      in
       let store_default_stmts =
         (* Check if there is a default expression and store it if there is one *)
         match default_expr with
@@ -497,9 +507,10 @@ and trans_decl ctx decl =
             in
             stmts @ List.concat_map ~f names
         | None ->
-            []
+            (* If not, some types have some default values *)
+            trans_default_decl ctx decl ada_typ names
       in
-      array_decl_stmts @ store_default_stmts
+      store_default_stmts
   | _ ->
       []
 
