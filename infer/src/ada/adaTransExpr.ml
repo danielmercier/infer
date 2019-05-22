@@ -747,6 +747,8 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx lvalue in
       let load_instrs, load_exp = load typ loc dest in
       return ctx cont typ loc dest_stmts (of_exp (dest_instrs @ load_instrs) load_exp)
+  | `NullLiteral _ ->
+      return ctx cont typ loc [] (of_exp [] Exp.null)
   | _ as expr ->
       unimplemented "trans_expr for %s" (AdaNode.short_image expr)
 
