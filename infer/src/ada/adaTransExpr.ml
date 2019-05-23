@@ -356,10 +356,52 @@ let rec trans_lvalue_ ctx dest =
       let array_precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv name in
       let array_dest_stmts, (array_dest_instrs, array_dest) = trans_lvalue_ ctx name in
       aux array_dest_stmts array_dest_instrs array_dest array_precise_typ
-  | `CallExpr {f_suffix= (lazy suffix)} ->
-      unimplemented "trans_lvalue for CallExpr with suffix %s" (AdaNode.short_image suffix)
+  | `CallExpr
+      { f_name= (lazy name)
+      ; f_suffix=
+          (lazy
+            ( ( `DottedName _
+              | `TargetName _
+              | `ExplicitDeref _
+              | `AttributeRef _
+              | `RelationOp _
+              | `CharLiteral _
+              | `QualExpr _
+              | `Identifier _
+              | `StringLiteral _
+              | `DiscreteSubtypeIndication _
+              | `UpdateAttributeRef _
+              | `BinOp _
+              | `CallExpr _ ) as suffix )) } ->
+      let ada_typ = trans_type_of_expr ctx.tenvs.ada_tenv dest in
+      trans_array_slice ctx ada_typ (location ctx.source_file dest) name
   | _ as expr ->
       unimplemented "trans_lvalue for %s" (AdaNode.short_image expr)
+
+
+and trans_array_slice ctx ada_typ loc name =
+  (* Array slicing is implemented by creating a temporary array and assigning
+   * first and last according to the suffix, for example for
+   * A (1 .. 10)
+   *
+   * we create a tmp A' and assign:
+   * A'.first := 1
+   * A'.last := 10
+   * A'.data := A.data
+   *
+   * Thus, we create an alias between the field data of tmp and the field
+   * data of the actual array *)
+  let array_typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+  let array_src_stmts, (array_src_instrs, array_src) = trans_lvalue_ ctx name in
+  let array_target = Pvar.mk_tmp (AdaNode.text name) (Procdesc.get_proc_name ctx.proc_desc) in
+  let data_typ, data = mk_array_access ctx array_typ array_src Data in
+  let load_data_instrs, loaded_data = load data_typ loc data in
+  let new_array_stmts =
+    mk_array ctx loc (Exp.Lvar array_target) ada_typ
+      (array_src_instrs @ load_data_instrs)
+      loaded_data
+  in
+  (array_src_stmts @ new_array_stmts, ([], Exp.Lvar array_target))
 
 
 (** Translate binop operations into the Sil corresponding expression *)
@@ -751,6 +793,51 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       return ctx cont typ loc [] (of_exp [] Exp.null)
   | _ as expr ->
       unimplemented "trans_expr for %s" (AdaNode.short_image expr)
+
+
+and mk_array ctx loc array_access ada_typ data_instrs data =
+  let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+  match ada_typ with
+  | Array (_, [(_, index_typ)], _) ->
+      let index_stmts, index_instrs, index_first, index_last =
+        trans_bounds_from_discrete ctx index_typ
+      in
+      let first_typ, first_field = mk_array_access ctx typ array_access First in
+      let last_typ, last_field = mk_array_access ctx typ array_access Last in
+      let length_typ, length_field = mk_array_access ctx typ array_access Length in
+      let data_typ, data_field = mk_array_access ctx typ array_access Data in
+      let store_length simple_expr =
+        let length_instrs, length_exp = to_exp simple_expr in
+        [ Block
+            { instrs= length_instrs @ [Sil.Store (length_field, length_typ, length_exp, loc)]
+            ; loc
+            ; nodekind= Procdesc.Node.Stmt_node (Call "assign") } ]
+      in
+      let length_stmts =
+        (* To compute the length of the array, we use an if expression:
+     * if first <= last then last - first + 1 else 0 *)
+        map_to_stmts ~f:store_length loc
+          (If
+             ( index_instrs
+             , Exp.le index_first index_last
+             , ( of_exp index_instrs
+                   (Exp.BinOp
+                      ( Binop.PlusA (Some Typ.IInt)
+                      , Exp.BinOp (Binop.MinusA (Some Typ.IInt), index_last, index_first)
+                      , Exp.one ))
+               , of_exp [] Exp.zero ) ))
+      in
+      index_stmts @ length_stmts
+      @ [ Block
+            { instrs=
+                index_instrs @ data_instrs
+                @ [ Sil.Store (first_field, first_typ, index_first, loc)
+                  ; Sil.Store (last_field, last_typ, index_last, loc)
+                  ; Sil.Store (data_field, data_typ, data, loc) ]
+            ; loc
+            ; nodekind= Procdesc.Node.Stmt_node (Call "assign") } ]
+  | _ ->
+      []
 
 
 and discrete_check ctx kind loc discrete_typ instrs exp =

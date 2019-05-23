@@ -493,7 +493,7 @@ let rec trans_type_of_expr tenv expr =
           typ
       | _ ->
           L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr) )
-  | `CallExpr {f_name= (lazy name)} ->
+  | `CallExpr {f_name= (lazy name); f_suffix= (lazy (`AssocList _))} ->
       (* For an call expr (that here represents a array access), rely on the
        * element type of the array type *)
       let rec aux = function
@@ -506,11 +506,69 @@ let rec trans_type_of_expr tenv expr =
             L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr)
       in
       aux (trans_type_of_expr tenv (name :> Expr.t))
+  | `CallExpr
+      { f_name= (lazy name)
+      ; f_suffix=
+          (lazy
+            ( ( `DottedName _
+              | `TargetName _
+              | `ExplicitDeref _
+              | `AttributeRef _
+              | `RelationOp _
+              | `CharLiteral _
+              | `QualExpr _
+              | `Identifier _
+              | `StringLiteral _
+              | `DiscreteSubtypeIndication _
+              | `UpdateAttributeRef _
+              | `BinOp _
+              | `CallExpr _ ) as suffix )) } ->
+      (* For other kind of callexpr, we assume here that this is a slice.
+       * We compute the new index depending on the suffix and return a new
+       * type of array *)
+      let rec aux = function
+        | Array (_, _, elt_typ) ->
+            let name = Typ.AdaRecord (Mangled.from_string (AdaNode.short_image name)) in
+            let typ =
+              match suffix with
+              | ( `DottedName _
+                | `TargetName _
+                | `ExplicitDeref _
+                | `AttributeRef _
+                | `RelationOp _
+                | `CharLiteral _
+                | `QualExpr _
+                | `Identifier _
+                | `StringLiteral _
+                | `UpdateAttributeRef _
+                | `BinOp _
+                | `CallExpr _ ) as expr ->
+                  trans_type_of_expr tenv (expr :> Expr.t)
+              | `DiscreteSubtypeIndication _ as subtype_indication ->
+                  trans_subtype_indication tenv name subtype_indication
+            in
+            let discrete_typ =
+              match typ with
+              | Discrete discrete ->
+                  discrete
+              | _ ->
+                  L.die InternalError "Expecting an index to be a discrete type"
+            in
+            Array (name, [(Fixed, discrete_typ)], elt_typ)
+        | Access root_typ ->
+            (* Implicity dereference *)
+            aux root_typ
+        | _ ->
+            L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr)
+      in
+      aux (trans_type_of_expr tenv (name :> Expr.t))
   | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)} when is_access attribute
     ->
       (* 'Access type has type Access on the type of the prefix *)
       let accessed_typ = trans_type_of_expr tenv (prefix :> Expr.t) in
       Access accessed_typ
+  | `BinOp {f_op= (lazy (`OpDoubleDot _))} as binop ->
+      Discrete (Signed (trans_binop binop))
   | #lvalue as lvalue -> (
     (* For an lvalue, we need to go to it's declaration to get the more precise
      * type.

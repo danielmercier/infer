@@ -61,6 +61,11 @@ val mk_array_access : context -> Typ.t -> Exp.t -> array_access -> Typ.t * Exp.t
 (** Compute the access to the desired field of the given lvalue assuming
  * it is an array. *)
 
+val mk_array : context -> Location.t -> Exp.t -> AdaType.t -> Sil.instr list -> Exp.t -> stmt list
+(** Return a list of statements corresponding to the assignement of a new
+ * array given it's type. This function assign fields first, last and length
+ * according to the type of the array and data to the given expression. *)
+
 (** A value of this type is passed to the translation of the expression. It says
  * what will be done with the translated expression.
  *    - Goto is meaningfull only for boolean expressions. The expression is

@@ -395,55 +395,17 @@ and trans_stmt ctx stmt =
       []
 
 
-and trans_array_decl ctx decl names typ indices =
+and trans_array_decl ctx decl names ada_typ =
   (* When an array is declared in Ada, there is an implicit allocation.
    * Translate this to a malloc call *)
   let loc = location ctx.source_file decl in
-  let index_stmts, index_instrs, index_first, index_last =
-    match indices with
-    | [(_, index_typ)] ->
-        trans_bounds_from_discrete ctx index_typ
-    | _ ->
-        unimplemented "multidimensional array"
-  in
+  let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
   let f name =
     let pvar = pvar ctx name in
-    let first_typ, first_field = mk_array_access ctx typ (Exp.Lvar pvar) First in
-    let last_typ, last_field = mk_array_access ctx typ (Exp.Lvar pvar) Last in
+    let stores_stmts = mk_array ctx loc (Exp.Lvar pvar) ada_typ [] Exp.null in
+    let id = Ident.(create_fresh knormal) in
     let length_typ, length_field = mk_array_access ctx typ (Exp.Lvar pvar) Length in
     let data_typ, data_field = mk_array_access ctx typ (Exp.Lvar pvar) Data in
-    let store_length simple_expr =
-      let length_instrs, length_exp = to_exp simple_expr in
-      [ Block
-          { instrs= length_instrs @ [Sil.Store (length_field, length_typ, length_exp, loc)]
-          ; loc
-          ; nodekind= Procdesc.Node.Stmt_node (Call "assign") } ]
-    in
-    let length_stmts =
-      (* To compute the length of the array, we use an if expression:
-       * if first <= last then last - first + 1 else 0 *)
-      map_to_stmts ~f:store_length loc
-        (If
-           ( index_instrs
-           , Exp.le index_first index_last
-           , ( of_exp index_instrs
-                 (Exp.BinOp
-                    ( Binop.PlusA (Some Typ.IInt)
-                    , Exp.BinOp (Binop.MinusA (Some Typ.IInt), index_last, index_first)
-                    , Exp.one ))
-             , of_exp [] Exp.zero ) ))
-    in
-    let stores_stmts =
-      index_stmts @ length_stmts
-      @ [ Block
-            { instrs=
-                index_instrs
-                @ [ Sil.Store (first_field, first_typ, index_first, loc)
-                  ; Sil.Store (last_field, last_typ, index_last, loc) ]
-            ; loc
-            ; nodekind= Procdesc.Node.Stmt_node (Call "assign") } ]
-    in
-    let id = Ident.(create_fresh knormal) in
     let load_length = Sil.Load (id, length_field, length_typ, loc) in
     (* Call a malloc to allocate some space for the array.
      * TODO: Instead of calling malloc, we should call our own builtin for array
@@ -471,9 +433,8 @@ and trans_array_decl ctx decl names typ indices =
  * the ada type *)
 and trans_default_decl ctx decl ada_typ names =
   match ada_typ with
-  | Array (_, indices, _) ->
-      let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
-      trans_array_decl ctx decl names typ indices
+  | Array _ ->
+      trans_array_decl ctx decl names ada_typ
   | Access _ ->
       (* An access type is always initialized by default to null *)
       let f id =
