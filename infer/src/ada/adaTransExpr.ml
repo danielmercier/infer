@@ -318,7 +318,7 @@ let rec trans_lvalue_ ctx dest =
       let loc = location ctx.source_file name in
       let rec aux acc_stmts array_dest_instrs array_dest typ =
         match typ with
-        | Array (_, [(_, index_typ)], _) ->
+        | Array (_, _, [index_typ], _) ->
             (* Since we are evaluating an lvalue, consider this as an access to an
              * array. An array is compiled to a record with the field data being the
              * real array. *)
@@ -798,7 +798,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
 and mk_array ctx loc array_access ada_typ data_instrs data =
   let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
   match ada_typ with
-  | Array (_, [(_, index_typ)], _) ->
+  | Array (_, _, [index_typ], _) ->
       let index_stmts, index_instrs, index_first, index_last =
         trans_bounds_from_discrete ctx index_typ
       in

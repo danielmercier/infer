@@ -43,7 +43,7 @@ and tenv
 and t =
   | Discrete of discrete
   | Float
-  | Array of Typ.Name.t * (index_kind * discrete) list * t
+  | Array of Typ.Name.t * index_kind * discrete list * t
   | Record of Typ.Name.t
   | Access of t
   | Void

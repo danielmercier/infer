@@ -41,7 +41,7 @@ and tenv = record TypenameHash.t
 and t =
   | Discrete of discrete
   | Float
-  | Array of Typ.Name.t * (index_kind * discrete) list * t
+  | Array of Typ.Name.t * index_kind * discrete list * t
   | Record of Typ.Name.t
   | Access of t
   | Void
@@ -169,7 +169,13 @@ and trans_array_constraints tenv constraints =
     | _ ->
         unimplemented "constraint for %s" (AdaNode.short_image constr)
   in
-  List.map ~f:trans_array_constraint (ConstraintList.f_list constraints)
+  let indices = List.map ~f:trans_array_constraint (ConstraintList.f_list constraints) in
+  match indices with
+  | (index_kind, _) :: _ ->
+      (* Extract the kind of the index, all other indices have the same kind *)
+      (index_kind, List.map ~f:snd indices)
+  | [] ->
+      L.die InternalError "Unexpected zero dimentional array"
 
 
 (** Translate an ada constraint on a type, to a new type derived from the given
@@ -206,8 +212,9 @@ and trans_constraint tenv name orig_type constr =
         L.die InternalError "Discriminant constraint on a non record type" )
   | `IndexConstraint {f_constraints= (lazy constraints)} -> (
     match orig_type with
-    | Array (_, _, elt_typ) ->
-        Array (name, trans_array_constraints tenv constraints, elt_typ)
+    | Array (_, _, _, elt_typ) ->
+        let index_kind, indices = trans_array_constraints tenv constraints in
+        Array (name, index_kind, indices, elt_typ)
     | _ ->
         L.die InternalError "Index constraint on a non array type" )
   | `RangeConstraint {f_range= (lazy range_spec)} -> (
@@ -227,7 +234,7 @@ and trans_array_type_def tenv name array_type_def =
       { f_indices= (lazy indices)
       ; f_component_type= (lazy (`ComponentDef {f_type_expr= (lazy type_expr)})) } ->
       let elt_typ = trans_type_expr tenv (type_expr :> TypeExpr.t) in
-      let indices =
+      let index_kind, indices =
         match indices with
         | `ConstrainedArrayIndices {f_list= (lazy constraints)} ->
             (* For constrained array indices, we fallback on calling
@@ -237,7 +244,7 @@ and trans_array_type_def tenv name array_type_def =
             (* TODO: Check what this kind of index is *)
             unimplemented "trans_type_def for UnconstrainedArrayIndices"
       in
-      Array (name, indices, elt_typ)
+      Array (name, index_kind, indices, elt_typ)
 
 
 (** Translate a lal record definition into a type.
@@ -500,7 +507,7 @@ let rec trans_type_of_expr tenv expr =
       (* For an call expr (that here represents a array access), rely on the
        * element type of the array type *)
       let rec aux = function
-        | Array (_, _, elt_typ) ->
+        | Array (_, _, _, elt_typ) ->
             elt_typ
         | Access root_typ ->
             (* Implicity dereference *)
@@ -531,7 +538,7 @@ let rec trans_type_of_expr tenv expr =
        * We compute the new index depending on the suffix and return a new
        * type of array *)
       let rec aux = function
-        | Array (_, _, elt_typ) ->
+        | Array (_, _, _, elt_typ) ->
             let name = Typ.AdaRecord (Mangled.from_string (AdaNode.short_image name)) in
             let typ =
               match suffix with
@@ -558,7 +565,7 @@ let rec trans_type_of_expr tenv expr =
               | _ ->
                   L.die InternalError "Expecting an index to be a discrete type"
             in
-            Array (name, [(Fixed, discrete_typ)], elt_typ)
+            Array (name, Fixed, [discrete_typ], elt_typ)
         | Access root_typ ->
             (* Implicity dereference *)
             aux root_typ
@@ -645,7 +652,7 @@ let rec to_infer_typ tenv infer_tenv typ =
       of_discrete discrete
   | Float ->
       Typ.mk (Tfloat FFloat)
-  | Array (name, [(index_kind, index_typ)], elt_typ) -> (
+  | Array (name, index_kind, [index_typ], elt_typ) -> (
       (* TODO: dimensions are not taken into account. Only one dimensional array
        * is implemented*)
       let struct_typ = Typ.mk (Tstruct name) in
@@ -743,12 +750,10 @@ let rec pp tenv fmt typ =
       pp_discrete fmt discrete
   | Float ->
       Format.fprintf fmt "float"
-  | Array (name, dimensions, elt_typ) ->
-      let pp_dimension fmt (kind, discrete) =
-        Format.fprintf fmt "%a %a" pp_kind kind pp_discrete discrete
-      in
+  | Array (name, index_kind, dimensions, elt_typ) ->
+      let pp_dimension fmt discrete = Format.fprintf fmt "%a" pp_discrete discrete in
       let pp_sep fmt () = Format.pp_print_string fmt ",@ " in
-      Format.fprintf fmt "type %a is array(@[%a@]) of %a" Typ.Name.pp name
+      Format.fprintf fmt "type %a is %a array(@[%a@]) of %a" Typ.Name.pp name pp_kind index_kind
         (Format.pp_print_list ~pp_sep pp_dimension)
         dimensions (pp tenv) elt_typ
   | Record name -> (
@@ -787,7 +792,7 @@ let rec pp tenv fmt typ =
         Format.fprintf fmt "type %a is record" Typ.Name.pp name )
   | Access typ -> (
     match typ with
-    | Record name | Array (name, _, _) ->
+    | Record name | Array (name, _, _, _) ->
         Format.fprintf fmt "is access %a" Typ.Name.pp name
     | _ ->
         Format.fprintf fmt "is access %a" (pp tenv) typ )
