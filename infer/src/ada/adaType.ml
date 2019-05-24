@@ -477,12 +477,14 @@ let rec trans_type_of_expr tenv expr =
             | Some typ ->
                 typ
             | None ->
-                L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr) )
+                L.die InternalError "Cannot translate a type for %s, cannot find field %a"
+                  (AdaNode.short_image expr) Typ.Fieldname.pp field )
         | Access root_typ ->
             (* Implicity dereference *)
             aux root_typ
         | _ ->
-            L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr)
+            L.die InternalError "Cannot translate a type for %s, expecting record type"
+              (AdaNode.short_image expr)
       in
       aux (trans_type_of_expr tenv (prefix :> Expr.t))
   | `ExplicitDeref {f_prefix= (lazy prefix)} -> (
@@ -492,7 +494,8 @@ let rec trans_type_of_expr tenv expr =
       | Access typ ->
           typ
       | _ ->
-          L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr) )
+          L.die InternalError "Cannot translate a type for %s, expecting access type"
+            (AdaNode.short_image expr) )
   | `CallExpr {f_name= (lazy name); f_suffix= (lazy (`AssocList _))} ->
       (* For an call expr (that here represents a array access), rely on the
        * element type of the array type *)
@@ -503,7 +506,8 @@ let rec trans_type_of_expr tenv expr =
             (* Implicity dereference *)
             aux root_typ
         | _ ->
-            L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr)
+            L.die InternalError "Cannot translate a type for %s, expecting array type"
+              (AdaNode.short_image expr)
       in
       aux (trans_type_of_expr tenv (name :> Expr.t))
   | `CallExpr
@@ -559,7 +563,8 @@ let rec trans_type_of_expr tenv expr =
             (* Implicity dereference *)
             aux root_typ
         | _ ->
-            L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr)
+            L.die InternalError "Cannot translate a type for %s, expecting array type"
+              (AdaNode.short_image expr)
       in
       aux (trans_type_of_expr tenv (name :> Expr.t))
   | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)} when is_access attribute
@@ -580,13 +585,15 @@ let rec trans_type_of_expr tenv expr =
     | Some type_expr ->
         trans_type_expr tenv type_expr
     | None ->
-        L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr) )
+        L.die InternalError "Cannot translate a type for %s, cannot find it's type expression"
+          (AdaNode.short_image expr) )
   | _ -> (
     match Expr.p_expression_type expr with
     | Some base_type_decl ->
         trans_type_decl tenv base_type_decl
     | None ->
-        L.die InternalError "Cannot translate a type for %s" (AdaNode.short_image expr) )
+        L.die InternalError "Cannot translate a type for %s, cannot find it's type declaration"
+          (AdaNode.short_image expr) )
 
 
 let trans_type_of_expr tenv expr = trans_type_of_expr tenv (expr :> Expr.t)
