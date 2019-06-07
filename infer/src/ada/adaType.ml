@@ -113,12 +113,12 @@ let trans_expr expr = trans_expr (expr :> Expr.t)
 
 (** Translate a BinOp to a range *)
 let trans_binop binop =
-  match (binop :> BinOp.t) with
-  | `BinOp {f_op= (lazy (`OpDoubleDot _)); f_left= (lazy left); f_right= (lazy right)}
-  | `RelationOp {f_op= (lazy (`OpDoubleDot _)); f_left= (lazy left); f_right= (lazy right)} ->
-      (trans_expr left, trans_expr right)
-  | `BinOp {f_op= (lazy op)} | `RelationOp {f_op= (lazy op)} ->
-      L.die InternalError "Cannot generate a discrete type with op %s" (AdaNode.short_image op)
+  match%nolazy (binop :> BinOp.t) with
+  | `BinOp {f_op= `OpDoubleDot _; f_left; f_right}
+  | `RelationOp {f_op= `OpDoubleDot _; f_left; f_right} ->
+      (trans_expr f_left, trans_expr f_right)
+  | `BinOp {f_op} | `RelationOp {f_op} ->
+      L.die InternalError "Cannot generate a discrete type with op %s" (AdaNode.short_image f_op)
 
 
 (** Translate a RangeSpec to a discrete type *)
@@ -148,24 +148,24 @@ and trans_array_constraints tenv constraints =
       | _ ->
           L.die InternalError "Expecting subtype indication" )
     | #SubtypeIndication.t as subtype_indication -> (
-      match SubtypeIndication.f_constraint subtype_indication with
-      | Some (`RangeConstraint {f_range= (lazy (`RangeSpec {f_range= (lazy (`BoxExpr _))}))}) -> (
-        (* Here is the only way to make a dynamic array *)
-        match
-          Option.value_exn (TypeExpr.p_designated_type_decl subtype_indication)
-          |> trans_type_decl tenv
-        with
-        | Discrete discrete ->
-            (Dynamic, discrete)
-        | _ ->
-            L.die InternalError "Index type should be a discrete type" )
-      | _ -> (
-        (* In other cases, this array dimension is fixed *)
-        match trans_type_expr tenv (subtype_indication :> TypeExpr.t) with
-        | Discrete discrete ->
-            (Fixed, discrete)
-        | _ ->
-            L.die InternalError "Index type should be a discrete type" ) )
+        match%nolazy SubtypeIndication.f_constraint subtype_indication with
+        | Some (`RangeConstraint {f_range= `RangeSpec {f_range= `BoxExpr _}}) -> (
+          (* Here is the only way to make a dynamic array *)
+          match
+            Option.value_exn (TypeExpr.p_designated_type_decl subtype_indication)
+            |> trans_type_decl tenv
+          with
+          | Discrete discrete ->
+              (Dynamic, discrete)
+          | _ ->
+              L.die InternalError "Index type should be a discrete type" )
+        | _ -> (
+          (* In other cases, this array dimension is fixed *)
+          match trans_type_expr tenv (subtype_indication :> TypeExpr.t) with
+          | Discrete discrete ->
+              (Fixed, discrete)
+          | _ ->
+              L.die InternalError "Index type should be a discrete type" ) )
     | _ ->
         unimplemented "constraint for %s" (AdaNode.short_image constr)
   in
@@ -181,15 +181,15 @@ and trans_array_constraints tenv constraints =
 (** Translate an ada constraint on a type, to a new type derived from the given
  * one*)
 and trans_constraint tenv name orig_type constr =
-  match (constr :> Constraint.t) with
+  match%nolazy (constr :> Constraint.t) with
   | `DeltaConstraint _ | `DigitsConstraint _ ->
       (* TODO: Same as for RealTypeDef, this should be updated when we implement
        * ranges on real types *)
       orig_type
-  | `DiscriminantConstraint {f_constraints= (lazy constraints)} -> (
+  | `DiscriminantConstraint {f_constraints} -> (
     match orig_type with
     | Record base_name ->
-        let param_actuals = AssocList.p_zip_with_params constraints |> sort_params in
+        let param_actuals = AssocList.p_zip_with_params f_constraints |> sort_params in
         ( match lookup tenv base_name with
         | Some {discriminants; fields} ->
             let discriminants =
@@ -210,17 +210,17 @@ and trans_constraint tenv name orig_type constr =
         Record name
     | _ ->
         L.die InternalError "Discriminant constraint on a non record type" )
-  | `IndexConstraint {f_constraints= (lazy constraints)} -> (
+  | `IndexConstraint {f_constraints} -> (
     match orig_type with
     | Array (_, _, _, elt_typ) ->
-        let index_kind, indices = trans_array_constraints tenv constraints in
+        let index_kind, indices = trans_array_constraints tenv f_constraints in
         Array (name, index_kind, indices, elt_typ)
     | _ ->
         L.die InternalError "Index constraint on a non array type" )
-  | `RangeConstraint {f_range= (lazy range_spec)} -> (
+  | `RangeConstraint {f_range} -> (
     match orig_type with
     | Discrete _ ->
-        trans_range_spec range_spec
+        trans_range_spec f_range
     | _ ->
         L.die InternalError "Range constraint on a non discrete type" )
 
@@ -229,14 +229,12 @@ and trans_constraint tenv name orig_type constr =
  * We translate an array to it's name, the index for each dimension as a list,
  * and the element type *)
 and trans_array_type_def tenv name array_type_def =
-  match (array_type_def :> ArrayTypeDef.t) with
-  | `ArrayTypeDef
-      { f_indices= (lazy indices)
-      ; f_component_type= (lazy (`ComponentDef {f_type_expr= (lazy type_expr)})) } ->
-      let elt_typ = trans_type_expr tenv (type_expr :> TypeExpr.t) in
+  match%nolazy (array_type_def :> ArrayTypeDef.t) with
+  | `ArrayTypeDef {f_indices; f_component_type= `ComponentDef {f_type_expr}} ->
+      let elt_typ = trans_type_expr tenv (f_type_expr :> TypeExpr.t) in
       let index_kind, indices =
-        match indices with
-        | `ConstrainedArrayIndices {f_list= (lazy constraints)} ->
+        match%nolazy f_indices with
+        | `ConstrainedArrayIndices {f_list= constraints} ->
             (* For constrained array indices, we fallback on calling
              * the translation of a list constraint *)
             trans_array_constraints tenv constraints
@@ -257,20 +255,19 @@ and trans_record_type_def tenv type_decl record_type_def =
       Record name
   | None ->
       let trans_component condition component =
-        match (component :> AdaNode.t) with
+        match%nolazy (component :> AdaNode.t) with
         | `ComponentDecl
-            { f_ids= (lazy (`DefiningNameList {list= (lazy ids)}))
-            ; f_component_def= (lazy (`ComponentDef {f_type_expr= (lazy type_expr)})) } ->
-            let typ = trans_type_expr tenv (type_expr :> TypeExpr.t) in
+            {f_ids= `DefiningNameList {list= ids}; f_component_def= `ComponentDef {f_type_expr}} ->
+            let typ = trans_type_expr tenv (f_type_expr :> TypeExpr.t) in
             List.map ~f:(fun name -> {name= field_name name; condition; typ}) ids
         | _ ->
             (* we ignore the rest of the possible types *)
             []
       in
-      let rec trans_variant_part condition = function
+      let rec trans_variant_part condition =
+        function%nolazy
         | `VariantPart
-            { VariantPartType.f_discr_name= (lazy ident)
-            ; f_variant= (lazy (`VariantList {list= (lazy variants)})) } ->
+            {VariantPartType.f_discr_name= ident; f_variant= `VariantList {list= variants}} ->
             (* A variant part is of the form:
              * when discr_name is
              *   case alternative_list =>
@@ -337,10 +334,10 @@ and trans_record_type_def tenv type_decl record_type_def =
         RecordTypeDef.f_record_def record_type_def |> BaseRecordDef.f_components
       in
       let discriminants =
-        match TypeDecl.f_discriminants type_decl with
+        match%nolazy TypeDecl.f_discriminants type_decl with
         | Some
-            (`KnownDiscriminantPart
-              {f_discr_specs= (lazy (`DiscriminantSpecList {list= (lazy discriminants)}))}) ->
+            (`KnownDiscriminantPart {f_discr_specs= `DiscriminantSpecList {list= discriminants}})
+          ->
             discriminants
         | _ ->
             []
@@ -354,7 +351,7 @@ and trans_record_type_def tenv type_decl record_type_def =
 (** Given the name of the translated type and the type definition, translate
  * a type definition into a type *)
 and trans_type_def tenv type_decl type_def =
-  match (type_def :> TypeDef.t) with
+  match%nolazy (type_def :> TypeDef.t) with
   | #EnumTypeDef.t as enum_type_def ->
       (* type Number is (One, Two, Three)
        * We assume that enum types first is 0 and last is (length - 1) *)
@@ -376,17 +373,17 @@ and trans_type_def tenv type_decl type_def =
   | #RealTypeDef.t ->
       (* TODO: simple float for now without taking ranges in account *)
       Float
-  | `AnonymousTypeAccessDef {f_type_decl= (lazy type_decl)} ->
+  | `AnonymousTypeAccessDef {f_type_decl} ->
       (* anonymous access *)
-      Access (trans_type_decl tenv type_decl)
-  | `TypeAccessDef {f_subtype_indication= (lazy subtype_indication)} ->
+      Access (trans_type_decl tenv f_type_decl)
+  | `TypeAccessDef {f_subtype_indication} ->
       (* access definition *)
-      Access (trans_type_expr tenv (subtype_indication :> TypeExpr.t))
-  | `DerivedTypeDef {f_subtype_indication= (lazy subtype_indication)} ->
+      Access (trans_type_expr tenv (f_subtype_indication :> TypeExpr.t))
+  | `DerivedTypeDef {f_subtype_indication} ->
       (* type Derived is new SomeType
        * return the type of the original type *)
       let name = get_name type_decl in
-      trans_subtype_indication tenv name subtype_indication
+      trans_subtype_indication tenv name f_subtype_indication
   | #ArrayTypeDef.t as array_type_def ->
       (* type Arr is array (1 .. 10) of Integer *)
       trans_array_type_def tenv (get_name type_decl) array_type_def
@@ -396,16 +393,16 @@ and trans_type_def tenv type_decl type_def =
 
 
 and trans_type_decl tenv base_type_decl =
-  match (base_type_decl :> BaseTypeDecl.t) with
+  match%nolazy (base_type_decl :> BaseTypeDecl.t) with
   | #TypeDecl.t as type_decl ->
       (* This is a type declaration, the type depends on the type definition *)
       let typ = trans_type_def tenv type_decl (TypeDecl.f_type_def type_decl) in
       typ
-  | `SubtypeDecl {f_subtype= (lazy subtype)} ->
+  | `SubtypeDecl {f_subtype} ->
       (* For a subtype, we can simply fallback on calling the translation for
        * a type expr *)
       let name = get_name base_type_decl in
-      trans_subtype_indication tenv name subtype
+      trans_subtype_indication tenv name f_subtype
   | #DiscreteBaseSubtypeDecl.t ->
       (* TODO: Check what kind of subtype declaration this refers to *)
       unimplemented "trans_type_decl for %s" (AdaNode.short_image base_type_decl)
@@ -455,7 +452,7 @@ let trans_type_decl tenv type_decl = trans_type_decl tenv (type_decl :> BaseType
 let trans_type_expr tenv type_expr = trans_type_expr tenv (type_expr :> TypeExpr.t)
 
 let rec trans_type_of_expr tenv expr =
-  match (expr :> Expr.t) with
+  match%nolazy (expr :> Expr.t) with
   | #lvalue as call when Name.p_is_call call -> (
     (* This is a call without arguments *)
     match Name.p_referenced_decl call with
@@ -474,7 +471,7 @@ let rec trans_type_of_expr tenv expr =
           Void )
     | _ ->
         L.die InternalError "Cannot generate a type for %s" (AdaNode.short_image expr) )
-  | `DottedName {f_prefix= (lazy prefix)} as name when is_record_field_access name ->
+  | `DottedName {f_prefix} as name when is_record_field_access name ->
       (* in a case of a dotted name representing the access to a field,
        * get the registered type for this field *)
       let rec aux = function
@@ -493,17 +490,17 @@ let rec trans_type_of_expr tenv expr =
             L.die InternalError "Cannot translate a type for %s, expecting record type"
               (AdaNode.short_image expr)
       in
-      aux (trans_type_of_expr tenv (prefix :> Expr.t))
-  | `ExplicitDeref {f_prefix= (lazy prefix)} -> (
+      aux (trans_type_of_expr tenv (f_prefix :> Expr.t))
+  | `ExplicitDeref {f_prefix} -> (
       (* For an explicit deref, rely on the accessed type of the pointer type *)
-      let access_typ = trans_type_of_expr tenv (prefix :> Expr.t) in
+      let access_typ = trans_type_of_expr tenv (f_prefix :> Expr.t) in
       match access_typ with
       | Access typ ->
           typ
       | _ ->
           L.die InternalError "Cannot translate a type for %s, expecting access type"
             (AdaNode.short_image expr) )
-  | `CallExpr {f_name= (lazy name); f_suffix= (lazy (`AssocList _))} ->
+  | `CallExpr {f_name; f_suffix= `AssocList _} ->
       (* For an call expr (that here represents a array access), rely on the
        * element type of the array type *)
       let rec aux = function
@@ -516,30 +513,29 @@ let rec trans_type_of_expr tenv expr =
             L.die InternalError "Cannot translate a type for %s, expecting array type"
               (AdaNode.short_image expr)
       in
-      aux (trans_type_of_expr tenv (name :> Expr.t))
+      aux (trans_type_of_expr tenv (f_name :> Expr.t))
   | `CallExpr
-      { f_name= (lazy name)
+      { f_name
       ; f_suffix=
-          (lazy
-            ( ( `DottedName _
-              | `TargetName _
-              | `ExplicitDeref _
-              | `AttributeRef _
-              | `RelationOp _
-              | `CharLiteral _
-              | `QualExpr _
-              | `Identifier _
-              | `StringLiteral _
-              | `DiscreteSubtypeIndication _
-              | `UpdateAttributeRef _
-              | `BinOp _
-              | `CallExpr _ ) as suffix )) } ->
+          ( `DottedName _
+          | `TargetName _
+          | `ExplicitDeref _
+          | `AttributeRef _
+          | `RelationOp _
+          | `CharLiteral _
+          | `QualExpr _
+          | `Identifier _
+          | `StringLiteral _
+          | `DiscreteSubtypeIndication _
+          | `UpdateAttributeRef _
+          | `BinOp _
+          | `CallExpr _ ) as suffix } ->
       (* For other kind of callexpr, we assume here that this is a slice.
        * We compute the new index depending on the suffix and return a new
        * type of array *)
       let rec aux = function
         | Array (_, _, _, elt_typ) ->
-            let name = Typ.AdaRecord (Mangled.from_string (AdaNode.short_image name)) in
+            let name = Typ.AdaRecord (Mangled.from_string (AdaNode.short_image f_name)) in
             let typ =
               match suffix with
               | ( `DottedName _
@@ -573,13 +569,12 @@ let rec trans_type_of_expr tenv expr =
             L.die InternalError "Cannot translate a type for %s, expecting array type"
               (AdaNode.short_image expr)
       in
-      aux (trans_type_of_expr tenv (name :> Expr.t))
-  | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)} when is_access attribute
-    ->
+      aux (trans_type_of_expr tenv (f_name :> Expr.t))
+  | `AttributeRef {f_prefix; f_attribute} when is_access f_attribute ->
       (* 'Access type has type Access on the type of the prefix *)
-      let accessed_typ = trans_type_of_expr tenv (prefix :> Expr.t) in
+      let accessed_typ = trans_type_of_expr tenv (f_prefix :> Expr.t) in
       Access accessed_typ
-  | `BinOp {f_op= (lazy (`OpDoubleDot _))} as binop ->
+  | `BinOp {f_op= `OpDoubleDot _} as binop ->
       Discrete (Signed (trans_binop binop))
   | #lvalue as lvalue -> (
     (* For an lvalue, we need to go to it's declaration to get the more precise

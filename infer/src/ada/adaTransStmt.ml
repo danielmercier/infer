@@ -40,14 +40,14 @@ let trans_assignment ctx orig_node precise_typ dest_instrs dest_expr expr =
 (** Translate the libadalang statements called "SimpleStmt" *)
 let trans_simple_stmt ctx simple_stmt =
   let loc = location ctx.source_file simple_stmt in
-  match (simple_stmt :> SimpleStmt.t) with
-  | `AssignStmt {f_dest= (lazy dest); f_expr= (lazy expr)} ->
-      let precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv dest in
-      let dest_stmts, (dest_instrs, dest_expr) = trans_lvalue ctx dest in
-      let stmts, result = trans_expr ctx Inline expr in
+  match%nolazy (simple_stmt :> SimpleStmt.t) with
+  | `AssignStmt {f_dest; f_expr} ->
+      let precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv f_dest in
+      let dest_stmts, (dest_instrs, dest_expr) = trans_lvalue ctx f_dest in
+      let stmts, result = trans_expr ctx Inline f_expr in
       dest_stmts @ stmts
       @ trans_assignment ctx simple_stmt precise_typ dest_instrs dest_expr result
-  | `ReturnStmt {f_return_expr= (lazy (Some expr))} -> (
+  | `ReturnStmt {f_return_expr= Some expr} -> (
     match ctx.ret_type with
     | Some type_expr ->
         let return = Exp.Lvar (Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc)) in
@@ -58,16 +58,17 @@ let trans_simple_stmt ctx simple_stmt =
             [] return result
     | None ->
         L.die InternalError "The function should have a return type" )
-  | `ReturnStmt {f_return_expr= (lazy None)} ->
+  | `ReturnStmt {f_return_expr= None} ->
       [Jump (loc, Exit)]
   | `NullStmt _ ->
       []
-  | `CallStmt {f_call= (lazy call)} ->
-      let stmts, (instrs, _) = trans_expr ctx (Tmp "call") call in
-      stmts @ [Block {instrs; loc; nodekind= Procdesc.Node.(Stmt_node (Call (AdaNode.text call)))}]
-  | `ExitStmt {f_loop_name= (lazy loop_name_opt); f_cond_expr= (lazy cond_expr)} -> (
+  | `CallStmt {f_call} ->
+      let stmts, (instrs, _) = trans_expr ctx (Tmp "call") f_call in
+      stmts
+      @ [Block {instrs; loc; nodekind= Procdesc.Node.(Stmt_node (Call (AdaNode.text f_call)))}]
+  | `ExitStmt {f_loop_name; f_cond_expr} -> (
       let label =
-        match loop_name_opt with
+        match f_loop_name with
         | Some loop_name -> (
           match
             AdaNode.p_xref loop_name >>= fun ref -> DefiningNameMap.find_opt ref ctx.loop_map
@@ -83,17 +84,17 @@ let trans_simple_stmt ctx simple_stmt =
           | None ->
               L.die InternalError "Exit stmt not inside a loop" )
       in
-      match cond_expr with
+      match f_cond_expr with
       | Some expr ->
           (* We exit only if the condition is true *)
           let stmts, () = trans_expr ctx (Goto (Label label, Next)) expr in
           stmts
       | None ->
           [Jump (loc, Label label)] )
-  | `Label {f_decl= (lazy (`LabelDecl {f_name= (lazy name)}))} ->
-      [Label (loc, find_or_add ctx name)]
-  | `GotoStmt {f_label_name= (lazy name)} ->
-      let name_ref = Option.value_exn (AdaNode.p_xref name) in
+  | `Label {f_decl= `LabelDecl {f_name}} ->
+      [Label (loc, find_or_add ctx f_name)]
+  | `GotoStmt {f_label_name} ->
+      let name_ref = Option.value_exn (AdaNode.p_xref f_label_name) in
       [Jump (loc, Label (find_or_add ctx name_ref))]
   | _ ->
       unimplemented "trans_simple_stmt for %s" (AdaNode.short_image simple_stmt)
@@ -134,16 +135,14 @@ let rec trans_if_stmt ctx orig_stmt cond_expr then_stmts else_stmts =
  *
  * *)
 and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
-  match (for_loop_spec :> ForLoopSpec.t) with
+  match%nolazy (for_loop_spec :> ForLoopSpec.t) with
   | `ForLoopSpec
-      { f_iter_expr= (lazy iter_expr)
-      ; f_has_reverse= (lazy has_reverse_node)
-      ; f_loop_type= (lazy (`IterTypeIn _))
-      ; f_var_decl= (lazy (`ForLoopVarDecl {f_id= (lazy var_id)})) } ->
+      {f_iter_expr; f_has_reverse; f_loop_type= `IterTypeIn _; f_var_decl= `ForLoopVarDecl {f_id}}
+    ->
       let typ =
         (* DiscreteSubtypeIndication is not an expr, so we need to filter
              * the different possible values of iter_expr, to return the IR type *)
-        match iter_expr with
+        match%nolazy f_iter_expr with
         | ( `CharLiteral _
           | `RelationOp _
           | `ExplicitDeref _
@@ -157,14 +156,14 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
           | `UpdateAttributeRef _
           | `Identifier _ ) as expr ->
             type_of_expr ctx expr
-        | `DiscreteSubtypeIndication {f_name= (lazy name)} ->
-            type_of_expr ctx name
+        | `DiscreteSubtypeIndication {f_name} ->
+            type_of_expr ctx f_name
       in
-      let has_reverse = ReverseNode.p_as_bool has_reverse_node in
-      let loop_var = pvar ctx var_id in
+      let has_reverse = ReverseNode.p_as_bool f_has_reverse in
+      let loop_var = pvar ctx f_id in
       let id = Ident.(create_fresh knormal) in
-      let load_loop_var = Sil.Load (id, Exp.Lvar loop_var, typ, location ctx.source_file var_id) in
-      let bounds_stmts, bounds_instrs, low_bound, high_bound = trans_bounds ctx iter_expr in
+      let load_loop_var = Sil.Load (id, Exp.Lvar loop_var, typ, location ctx.source_file f_id) in
+      let bounds_stmts, bounds_instrs, low_bound, high_bound = trans_bounds ctx f_iter_expr in
       let comparison =
         if has_reverse then Exp.BinOp (Binop.Ge, Exp.Var id, low_bound)
         else Exp.BinOp (Binop.Le, Exp.Var id, high_bound)
@@ -218,13 +217,13 @@ and trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts =
                   , [ [prune_true_block] @ loop_stmts @ [in_loop_assignment]
                     ; [prune_false_block] @ [Jump (loc, Label end_loop)] ] ) ]
           , end_loop ) ]
-  | `ForLoopSpec {f_loop_type= (lazy (`IterTypeOf _))} ->
+  | `ForLoopSpec {f_loop_type= `IterTypeOf _} ->
       unimplemented "for X of ..."
 
 
 (** Translate the libadalang statements called "CompositeStmt" *)
 and trans_composite_stmt ctx composite_stmt =
-  match (composite_stmt :> CompositeStmt.t) with
+  match%nolazy (composite_stmt :> CompositeStmt.t) with
   | #BaseLoopStmt.t as loop_stmt -> (
       let loc = location ctx.source_file composite_stmt in
       let end_loop = mk_label () in
@@ -241,28 +240,28 @@ and trans_composite_stmt ctx composite_stmt =
             {ctx with current_loop= Some end_loop}
       in
       let loop_stmts = trans_stmts new_ctx (BaseLoopStmt.f_stmts loop_stmt) in
-      match BaseLoopStmt.f_spec loop_stmt with
+      match%nolazy BaseLoopStmt.f_spec loop_stmt with
       | Some (`ForLoopSpec _ as for_loop_spec) ->
           (* Call the previous defined function to translate a for loop *)
           trans_for_loop ctx composite_stmt end_loop for_loop_spec loop_stmts
-      | Some (`WhileLoopSpec {f_expr= (lazy expr)}) ->
+      | Some (`WhileLoopSpec {f_expr}) ->
           (* For a while loop we translate the condition expression by either
            * going to the next instruction which is the core of the loop, or
            * the end of the loop *)
-          let stmts, () = trans_expr ctx (Goto (Next, Label end_loop)) expr in
+          let stmts, () = trans_expr ctx (Goto (Next, Label end_loop)) f_expr in
           [LoopStmt (loc, stmts @ loop_stmts, end_loop)]
       | None ->
           (* No condition to exit the loop *)
           [LoopStmt (loc, loop_stmts, end_loop)] )
-  | `NamedStmt {f_stmt= (lazy stmt)} ->
+  | `NamedStmt {f_stmt} ->
       (* A named statement is a statement with a name. We don't care about it's
        * name *)
-      trans_stmt ctx (stmt :> Stmt.t)
+      trans_stmt ctx (f_stmt :> Stmt.t)
   | `IfStmt
-      { IfStmtType.f_cond_expr= (lazy cond_expr)
-      ; f_then_stmts= (lazy then_stmts)
-      ; f_alternatives= (lazy (`ElsifStmtPartList {list= (lazy alternatives)}))
-      ; f_else_stmts= (lazy else_stmts) } ->
+      { f_cond_expr
+      ; f_then_stmts
+      ; f_alternatives= `ElsifStmtPartList {list= alternatives}
+      ; f_else_stmts } ->
       (* An if statement in Ada have some alternatives, but translate this like
        * if A then S1 elsif B then S2 else S3
        * to:
@@ -275,24 +274,25 @@ and trans_composite_stmt ctx composite_stmt =
             let else_stmts = aux q in
             trans_if_stmt ctx (alternative :> AdaNode.t) alt_cond_expr alt_stmts else_stmts
         | [] ->
-            else_stmts >>| trans_stmts ctx |> Option.value ~default:[]
+            f_else_stmts >>| trans_stmts ctx |> Option.value ~default:[]
       in
-      let trans_then_stmts = trans_stmts ctx then_stmts in
-      trans_if_stmt ctx (composite_stmt :> AdaNode.t) cond_expr trans_then_stmts (aux alternatives)
-  | (`BeginBlock {f_stmts= (lazy handled_stmts)} | `DeclBlock {f_stmts= (lazy handled_stmts)}) as
-    block_stmt ->
+      let trans_then_stmts = trans_stmts ctx f_then_stmts in
+      trans_if_stmt ctx
+        (composite_stmt :> AdaNode.t)
+        f_cond_expr trans_then_stmts (aux alternatives)
+  | (`BeginBlock {f_stmts} | `DeclBlock {f_stmts}) as block_stmt ->
       (* We translate the statements inside the block *)
-      let stmts = trans_stmts ctx (HandledStmts.f_stmts handled_stmts) in
+      let stmts = trans_stmts ctx (HandledStmts.f_stmts f_stmts) in
       let decl_stmts =
         (* If the block is a declarative block, we need to translate the declarations *)
-        match block_stmt with
-        | `DeclBlock {f_decls= (lazy decl_part)} ->
-            trans_decls ctx decl_part
+        match%nolazy block_stmt with
+        | `DeclBlock {f_decls} ->
+            trans_decls ctx f_decls
         | `BeginBlock _ ->
             []
       in
       decl_stmts @ stmts
-  | `ExtendedReturnStmt {f_decl= (lazy decl); f_stmts= (lazy handled_stmts)} ->
+  | `ExtendedReturnStmt {f_decl; f_stmts} ->
       (* An extended return statement is a statement that defines a variable
        * that will then be returned.
        *
@@ -304,18 +304,16 @@ and trans_composite_stmt ctx composite_stmt =
       let return_var = Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc) in
       let f acc name = {acc with subst= DefiningNameMap.add name return_var acc.subst} in
       let new_ctx =
-        ExtendedReturnStmtObjectDecl.f_ids decl
+        ExtendedReturnStmtObjectDecl.f_ids f_decl
         |> DefiningNameList.f_list |> List.fold_left ~f ~init:ctx
       in
-      let decl_stmts = trans_decl new_ctx (decl :> AdaNode.t) in
+      let decl_stmts = trans_decl new_ctx (f_decl :> AdaNode.t) in
       let stmts =
-        handled_stmts >>| HandledStmts.f_stmts >>| trans_stmts new_ctx |> Option.value ~default:[]
+        f_stmts >>| HandledStmts.f_stmts >>| trans_stmts new_ctx |> Option.value ~default:[]
       in
       let end_stmt_loc = end_location ctx.source_file composite_stmt in
       decl_stmts @ stmts @ [Jump (end_stmt_loc, Exit)]
-  | `CaseStmt
-      { f_expr= (lazy expr)
-      ; f_alternatives= (lazy (`CaseStmtAlternativeList {list= (lazy alternatives)})) } ->
+  | `CaseStmt {f_expr; f_alternatives= `CaseStmtAlternativeList {list= alternatives}} ->
       (* A case statement is translated into a succession of if statements.
        *
        * case X when A => S1 when B => S2 when others => S3
@@ -328,9 +326,9 @@ and trans_composite_stmt ctx composite_stmt =
        * conditions of the if statements
        * *)
       let loc = location ctx.source_file composite_stmt in
-      let typ = type_of_expr ctx expr in
+      let typ = type_of_expr ctx f_expr in
       let end_case_label = mk_label () in
-      let expr_stmts, (instrs, exp) = trans_expr ctx (Tmp "case_stmt") expr in
+      let expr_stmts, (instrs, exp) = trans_expr ctx (Tmp "case_stmt") f_expr in
       let is_others alt =
         match CaseStmtAlternative.f_choices alt |> AlternativesList.f_list with
         | [#OthersDesignator.t] ->
@@ -447,19 +445,14 @@ and trans_default_decl ctx decl ada_typ names =
 
 
 and trans_decl ctx decl =
-  match (decl :> AdaNode.t) with
-  | `ObjectDecl
-      { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
-      ; f_type_expr= (lazy type_expr)
-      ; f_default_expr= (lazy default_expr) }
+  match%nolazy (decl :> AdaNode.t) with
+  | `ObjectDecl {f_ids= `DefiningNameList {list= names}; f_type_expr; f_default_expr}
   | `ExtendedReturnStmtObjectDecl
-      { f_ids= (lazy (`DefiningNameList {list= (lazy names)}))
-      ; f_type_expr= (lazy type_expr)
-      ; f_default_expr= (lazy default_expr) } ->
-      let ada_typ = trans_type_expr ctx.tenvs.ada_tenv type_expr in
+      {f_ids= `DefiningNameList {list= names}; f_type_expr; f_default_expr} ->
+      let ada_typ = trans_type_expr ctx.tenvs.ada_tenv f_type_expr in
       let store_default_stmts =
         (* Check if there is a default expression and store it if there is one *)
-        match default_expr with
+        match f_default_expr with
         | Some default_expr ->
             let stmts, expr = trans_expr ctx Inline default_expr in
             let f id =

@@ -251,8 +251,8 @@ let rec trans_lvalue_ ctx dest =
     let instrs, loaded = load typ loc exp in
     (access_check_stmts, (instrs, loaded))
   in
-  match (dest :> lvalue) with
-  | `DottedName {f_prefix= (lazy prefix)} as name when is_record_field_access name ->
+  match%nolazy (dest :> lvalue) with
+  | `DottedName {f_prefix} as name when is_record_field_access name ->
       (* In this case dotted name is an access to the record with name prefix *)
       let rec aux acc_stmts instrs exp = function
         | Record record_name ->
@@ -293,10 +293,11 @@ let rec trans_lvalue_ ctx dest =
             in
             aux (acc_stmts @ access_check_stmts) load_instrs loaded root_typ
         | _ ->
-            L.die InternalError "Variable %s should be of record type" (AdaNode.short_image prefix)
+            L.die InternalError "Variable %s should be of record type"
+              (AdaNode.short_image f_prefix)
       in
-      let typ = trans_type_of_expr ctx.tenvs.ada_tenv prefix in
-      let prefix_stmts, (prefix_instrs, prefix_expr) = trans_lvalue_ ctx prefix in
+      let typ = trans_type_of_expr ctx.tenvs.ada_tenv f_prefix in
+      let prefix_stmts, (prefix_instrs, prefix_expr) = trans_lvalue_ ctx f_prefix in
       aux prefix_stmts prefix_instrs prefix_expr typ
   | (`DottedName _ | `Identifier _) as name -> (
       let typ = type_of_expr ctx name in
@@ -308,14 +309,14 @@ let rec trans_lvalue_ ctx dest =
           ([], load ptr_typ (location ctx.source_file name) dest_expr)
       | Some Copy | None ->
           ([], ([], dest_expr)) )
-  | `ExplicitDeref {ExplicitDerefType.f_prefix= (lazy prefix)} ->
-      let stmts, (instrs, dest_expr) = trans_lvalue_ ctx prefix in
+  | `ExplicitDeref {f_prefix} ->
+      let stmts, (instrs, dest_expr) = trans_lvalue_ ctx f_prefix in
       let access_check_stmts, (load_instrs, load_expr) =
-        deref (type_of_expr ctx prefix) (location ctx.source_file dest) instrs dest_expr
+        deref (type_of_expr ctx f_prefix) (location ctx.source_file dest) instrs dest_expr
       in
       (access_check_stmts @ stmts, (instrs @ load_instrs, load_expr))
-  | `CallExpr {f_name= (lazy name); f_suffix= (lazy (`AssocList {list= (lazy assoc_list)}))} ->
-      let loc = location ctx.source_file name in
+  | `CallExpr {f_name; f_suffix= `AssocList {list= assoc_list}} ->
+      let loc = location ctx.source_file f_name in
       let rec aux acc_stmts array_dest_instrs array_dest typ =
         match typ with
         | Array (_, _, [index_typ], _) ->
@@ -324,9 +325,9 @@ let rec trans_lvalue_ ctx dest =
              * real array. *)
             let array_typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv typ in
             let index_dest_stmts, (index_dest_instrs, index_dest) =
-              match assoc_list with
-              | [`ParamAssoc {f_designator= (lazy None); f_r_expr= (lazy index_expr)}] ->
-                  trans_expr_ ctx (Tmp "index") (index_expr :> Expr.t)
+              match%nolazy assoc_list with
+              | [`ParamAssoc {f_designator= None; f_r_expr}] ->
+                  trans_expr_ ctx (Tmp "index") (f_r_expr :> Expr.t)
               | _ ->
                   unimplemented
                     "trans_lvalue for a CallExpr for assoc_list other than one ParamAssoc"
@@ -353,28 +354,27 @@ let rec trans_lvalue_ ctx dest =
         | _ ->
             L.die InternalError "Unexpected non array type for %s" (AdaNode.short_image dest)
       in
-      let array_precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv name in
-      let array_dest_stmts, (array_dest_instrs, array_dest) = trans_lvalue_ ctx name in
+      let array_precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv f_name in
+      let array_dest_stmts, (array_dest_instrs, array_dest) = trans_lvalue_ ctx f_name in
       aux array_dest_stmts array_dest_instrs array_dest array_precise_typ
   | `CallExpr
-      { f_name= (lazy name)
+      { f_name
       ; f_suffix=
-          (lazy
-            ( ( `DottedName _
-              | `TargetName _
-              | `ExplicitDeref _
-              | `AttributeRef _
-              | `RelationOp _
-              | `CharLiteral _
-              | `QualExpr _
-              | `Identifier _
-              | `StringLiteral _
-              | `DiscreteSubtypeIndication _
-              | `UpdateAttributeRef _
-              | `BinOp _
-              | `CallExpr _ ) as suffix )) } ->
+          ( `DottedName _
+          | `TargetName _
+          | `ExplicitDeref _
+          | `AttributeRef _
+          | `RelationOp _
+          | `CharLiteral _
+          | `QualExpr _
+          | `Identifier _
+          | `StringLiteral _
+          | `DiscreteSubtypeIndication _
+          | `UpdateAttributeRef _
+          | `BinOp _
+          | `CallExpr _ ) } ->
       let ada_typ = trans_type_of_expr ctx.tenvs.ada_tenv dest in
-      trans_array_slice ctx ada_typ (location ctx.source_file dest) name
+      trans_array_slice ctx ada_typ (location ctx.source_file dest) f_name
   | _ as expr ->
       unimplemented "trans_lvalue for %s" (AdaNode.short_image expr)
 
@@ -511,8 +511,8 @@ and trans_enum_literal : type a.
     | None ->
         L.die InternalError "Cannot find enum type for %s" (AdaNode.short_image enum_lit)
   in
-  match TypeDecl.f_type_def enum_typ with
-  | `EnumTypeDef {f_enum_literals= (lazy (`EnumLiteralDeclList {list= (lazy enum_literals)}))} -> (
+  match%nolazy TypeDecl.f_type_def enum_typ with
+  | `EnumTypeDef {f_enum_literals= `EnumLiteralDeclList {list= enum_literals}} -> (
       (* Find the position of the enum literal inside the type it is associated to *)
       let result = List.findi ~f:(fun _ lit -> EnumLiteralDecl.equal enum_lit lit) enum_literals in
       match result with
@@ -611,31 +611,31 @@ and trans_bounds_ ctx bounds_expr =
   in
   match bounds_expr with
   | #Expr.t as expr -> (
-    match (expr : [< Expr.t]) with
-    | `BinOp {f_op= (lazy (`OpDoubleDot _)); f_left= (lazy left); f_right= (lazy right)}
-    | `RelationOp {f_op= (lazy (`OpDoubleDot _)); f_left= (lazy left); f_right= (lazy right)} ->
-        let low_bound_stmts, (low_bound_instrs, low_bound) =
-          trans_expr_ ctx (Tmp "") (left :> Expr.t)
-        in
-        let high_bound_stmts, (high_bound_instrs, high_bound) =
-          trans_expr_ ctx (Tmp "") (right :> Expr.t)
-        in
-        ( low_bound_stmts @ high_bound_stmts
-        , low_bound_instrs @ high_bound_instrs
-        , low_bound
-        , high_bound )
-    | #lvalue as lvalue -> (
-      match Name.p_referenced_decl lvalue with
-      | Some (#BaseTypeDecl.t as base_type_decl) ->
-          (* In this case, the lvalue refers to a type, lets translate the
+      match%nolazy (expr : [< Expr.t]) with
+      | `BinOp {f_op= `OpDoubleDot _; f_left; f_right}
+      | `RelationOp {f_op= `OpDoubleDot _; f_left; f_right} ->
+          let low_bound_stmts, (low_bound_instrs, low_bound) =
+            trans_expr_ ctx (Tmp "") (f_left :> Expr.t)
+          in
+          let high_bound_stmts, (high_bound_instrs, high_bound) =
+            trans_expr_ ctx (Tmp "") (f_right :> Expr.t)
+          in
+          ( low_bound_stmts @ high_bound_stmts
+          , low_bound_instrs @ high_bound_instrs
+          , low_bound
+          , high_bound )
+      | #lvalue as lvalue -> (
+        match Name.p_referenced_decl lvalue with
+        | Some (#BaseTypeDecl.t as base_type_decl) ->
+            (* In this case, the lvalue refers to a type, lets translate the
            * type to bounds *)
-          let typ = trans_type_decl ctx.tenvs.ada_tenv base_type_decl in
-          trans_bounds_from_type typ
+            let typ = trans_type_decl ctx.tenvs.ada_tenv base_type_decl in
+            trans_bounds_from_type typ
+        | _ ->
+            let stmts, (instrs, exp) = trans_expr_ ctx (Tmp "") (lvalue :> Expr.t) in
+            (stmts, instrs, exp, exp) )
       | _ ->
-          let stmts, (instrs, exp) = trans_expr_ ctx (Tmp "") (lvalue :> Expr.t) in
-          (stmts, instrs, exp, exp) )
-    | _ ->
-        unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr) )
+          unimplemented "trans_bounds for %s" (AdaNode.short_image bounds_expr) )
   | #SubtypeIndication.t as subtype ->
       let typ = trans_type_expr ctx.tenvs.ada_tenv subtype in
       trans_bounds_from_type typ
@@ -687,7 +687,7 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
  fun ctx cont expr ->
   let typ = type_of_expr ctx expr in
   let loc = location ctx.source_file expr in
-  match (expr :> Expr.t) with
+  match%nolazy (expr :> Expr.t) with
   | #IntLiteral.t as int_literal ->
       let value = IntLiteral.p_denoted_value int_literal in
       return ctx cont typ loc [] (of_exp [] (Exp.Const (Const.Cint (IntLit.of_int value))))
@@ -697,27 +697,24 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
         trans_call ctx cont ident call_ref []
     | _ ->
         unimplemented "trans_expr for an identifier call %s" (AdaNode.short_image ident) )
-  | `AttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
-  | `UpdateAttributeRef {f_prefix= (lazy prefix); f_attribute= (lazy attribute)}
-    when is_access attribute ->
-      let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx prefix in
+  | (`AttributeRef {f_prefix; f_attribute} | `UpdateAttributeRef {f_prefix; f_attribute})
+    when is_access f_attribute ->
+      let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx f_prefix in
       return ctx cont typ loc dest_stmts (of_exp dest_instrs dest)
-  | `UnOp {f_op= (lazy op); f_expr= (lazy expr)} as unop -> (
-    match Name.p_referenced_decl op with
+  | `UnOp {f_op; f_expr} as unop -> (
+    match Name.p_referenced_decl f_op with
     | Some ref ->
-        trans_call ctx cont unop ref ([(Copy, expr)] :> (param_mode * Expr.t) list)
+        trans_call ctx cont unop ref ([(Copy, f_expr)] :> (param_mode * Expr.t) list)
     | None ->
         trans_unop ctx cont unop )
-  | #BinOp.t as binop -> (
-      let lhs = BinOp.f_left binop in
-      let op = BinOp.f_op binop in
-      let rhs = BinOp.f_right binop in
-      match Name.p_referenced_decl op with
-      | Some ref ->
-          trans_call ctx cont binop ref ([(Copy, lhs); (Copy, rhs)] :> (param_mode * Expr.t) list)
-      | None ->
-          trans_binop ctx cont binop )
-  | `CallExpr {f_name= (lazy name); f_suffix= (lazy (#AssocList.t as assoc_list))} as call_expr
+  | (`BinOp {f_left; f_op; f_right} | `RelationOp {f_left; f_op; f_right}) as binop -> (
+    match Name.p_referenced_decl f_op with
+    | Some ref ->
+        trans_call ctx cont binop ref
+          ([(Copy, f_left); (Copy, f_right)] :> (param_mode * Expr.t) list)
+    | None ->
+        trans_binop ctx cont binop )
+  | `CallExpr {f_name; f_suffix= #AssocList.t as assoc_list} as call_expr
     when Name.p_is_call call_expr -> (
       let sorted_params =
         AssocList.p_zip_with_params assoc_list
@@ -730,23 +727,21 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
                | _ ->
                    L.die InternalError "Should be called on a procedure param_actuals" )
       in
-      match Name.p_referenced_decl name with
+      match Name.p_referenced_decl f_name with
       | Some ref ->
           trans_call ctx cont expr ref sorted_params
       | None ->
-          L.die InternalError "Unknown call to %s" (AdaNode.short_image name) )
-  | `MembershipExpr
-      { f_expr= (lazy expr)
-      ; f_op= (lazy op)
-      ; f_membership_exprs= (lazy (`ExprAlternativesList {list= (lazy alternatives)})) } ->
-      let typ = type_of_expr ctx expr in
+          L.die InternalError "Unknown call to %s" (AdaNode.short_image f_name) )
+  | `MembershipExpr {f_expr; f_op; f_membership_exprs= `ExprAlternativesList {list= alternatives}}
+    ->
+      let typ = type_of_expr ctx f_expr in
       let tested_stmts, tested_expr = trans_expr_ ctx Inline (expr :> Expr.t) in
       let membership_stmts, membership_expr =
         trans_membership_expr_ ctx Inline typ loc tested_expr
           (alternatives :> [Expr.t | SubtypeIndication.t] list)
       in
       let inlined_expr =
-        match op with
+        match f_op with
         | `OpIn _ ->
             membership_expr
         | `OpNotIn _ ->
@@ -761,12 +756,12 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       in
       return ctx cont typ loc (tested_stmts @ membership_stmts) inlined_expr
   | `IfExpr
-      { f_cond_expr= (lazy cond_expr)
-      ; f_then_expr= (lazy then_expr)
-      ; f_alternatives= (lazy (`ElsifExprPartList {list= (lazy alternatives)}))
-      ; f_else_expr= (lazy (Some else_expr)) } ->
-      let cond_stmts, cond_expr = trans_expr_ ctx Inline (cond_expr :> Expr.t) in
-      let then_stmts, then_expr = trans_expr_ ctx Inline (then_expr :> Expr.t) in
+      { f_cond_expr
+      ; f_then_expr
+      ; f_alternatives= `ElsifExprPartList {list= alternatives}
+      ; f_else_expr= Some else_expr } ->
+      let cond_stmts, cond_expr = trans_expr_ ctx Inline (f_cond_expr :> Expr.t) in
+      let then_stmts, then_expr = trans_expr_ ctx Inline (f_then_expr :> Expr.t) in
       let else_stmts, else_expr = trans_expr_ ctx Inline (else_expr :> Expr.t) in
       let f alternative (stmts, else_expr) =
         let cond_stmts, cond_expr =
@@ -783,8 +778,8 @@ and trans_any_expr_ : type a. context -> a continuation -> Expr.t -> stmt list *
       return ctx cont typ loc
         (cond_stmts @ then_stmts @ elsif_stmts)
         (mk_if cond_expr then_expr elsif_expr)
-  | `ParenExpr {f_expr= (lazy expr)} ->
-      trans_expr_ ctx cont (expr :> Expr.t)
+  | `ParenExpr {f_expr} ->
+      trans_expr_ ctx cont (f_expr :> Expr.t)
   | #lvalue as lvalue ->
       let dest_stmts, (dest_instrs, dest) = trans_lvalue_ ctx lvalue in
       let load_instrs, load_exp = load typ loc dest in
