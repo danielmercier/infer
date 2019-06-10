@@ -901,6 +901,108 @@ and discriminant_check ctx loc record_name instrs exp (discriminant, condition) 
               (true, Sil.Ik_bexp, Procdesc.Node.PruneNodeKind_AdaCheck DiscriminantCheck) } ]
 
 
+and trans_aggregate ctx ada_typ (aggregate : Aggregate.t) =
+  match ada_typ with
+  | Record rec_name ->
+      trans_record_aggregate ctx rec_name aggregate
+  | _ ->
+      unimplemented "trans_aggregate for array aggregates"
+
+
+and trans_record_aggregate ctx rec_name (aggregate : Aggregate.t) =
+  match%nolazy aggregate with
+  | `Aggregate {f_assocs= Some (`AssocList {list= assoc_list})} ->
+      (*assoc_list should be a list of AggregateAssoc*)
+      let tmp_var = Pvar.mk_tmp "aggregate" (Procdesc.get_proc_name ctx.proc_desc) in
+      let assign_assoc_fields (assoc : BasicAssoc.t) =
+        match%nolazy assoc with
+        | `AggregateAssoc {f_designators= Some (`AlternativesList {list= designators}); f_r_expr}
+          -> (
+            let loc = location ctx.source_file assoc in
+            let typ = ref None in
+            let field designator =
+              match AdaNode.p_xref designator >>| LalUtils.field_name with
+              | Some field_name ->
+                  let ada_field_typ =
+                    match lookup_field ctx.tenvs.ada_tenv rec_name field_name >>| field_typ with
+                    | Some typ ->
+                        typ
+                    | None ->
+                        L.die InternalError "Cannot get the xref for %s"
+                          (AdaNode.short_image designator)
+                  in
+                  let field_typ =
+                    to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_field_typ
+                  in
+                  typ := Some ada_field_typ ;
+                  Exp.Lfield (Exp.Lvar tmp_var, field_name, field_typ)
+              | None ->
+                  L.die InternalError "Cannot get the xref for %s" (AdaNode.short_image designator)
+            in
+            match !typ with
+            | Some typ ->
+                let dests = List.map ~f:field designators in
+                trans_assignments ctx typ loc [] dests (f_r_expr :> Expr.t)
+            | None ->
+                [] )
+        | _ ->
+            L.die InternalError "Unexpected %s for an record aggregate" (AdaNode.short_image assoc)
+      in
+      (List.concat_map ~f:assign_assoc_fields assoc_list, ([], Exp.Lvar tmp_var))
+  | `Aggregate {f_assocs= None} ->
+      unimplemented "trans_record_aggregate with empty f_assocs"
+
+
+and trans_assignments ctx ada_typ loc dest_instrs dests lal_expr =
+  let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+  match ada_typ with
+  | Record rec_name ->
+      let src_stmts, (src_instrs, src) =
+        match lal_expr with
+        | #lvalue as lvalue ->
+            trans_lvalue_ ctx lvalue
+        | #Aggregate.t as aggregate ->
+            trans_record_aggregate ctx rec_name aggregate
+        | _ ->
+            L.die InternalError "Unexpected assignment of %s to a record"
+              (AdaNode.short_image lal_expr)
+      in
+      let id = Ident.(create_fresh knormal) in
+      let ptr_to_typ = Typ.mk (Tptr (typ, Typ.Pk_reference)) in
+      let recordcpy dest =
+        Sil.Call
+          ( (id, Typ.void)
+          , Exp.Const (Const.Cfun AdaBuiltins.recordcpy)
+          , [(dest, ptr_to_typ); (src, ptr_to_typ)]
+          , loc
+          , CallFlags.default )
+      in
+      let nodekind = Procdesc.Node.(Stmt_node (Call "recordcpy")) in
+      src_stmts
+      @ [Block {instrs= dest_instrs @ src_instrs @ List.map dests ~f:recordcpy; loc; nodekind}]
+  | _ ->
+      let f simple_expr =
+        let expr_instrs, exp = to_exp simple_expr in
+        let assignment dest = Sil.Store (dest, typ, exp, loc) in
+        let instrs = dest_instrs @ expr_instrs @ List.map ~f:assignment dests in
+        let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
+        let range_check_stmts =
+          match ada_typ with
+          | Discrete discrete ->
+              let f dest =
+                let load_instrs, loaded = load typ loc dest in
+                range_check ctx loc discrete (dest_instrs @ load_instrs) loaded
+              in
+              List.concat_map ~f dests
+          | _ ->
+              []
+        in
+        Block {instrs; loc; nodekind} :: range_check_stmts
+      in
+      let stmts, expr = trans_expr_ ctx Inline lal_expr in
+      stmts @ map_to_stmts ~f loc expr
+
+
 let trans_lvalue ctx dest = trans_lvalue_ ctx (dest :> lvalue)
 
 let trans_expr ctx cont expr = trans_expr_ ctx cont (expr :> Expr.t)
@@ -909,3 +1011,7 @@ let trans_bounds ctx bounds_expr = trans_bounds_ ctx (bounds_expr :> [Expr.t | S
 
 let trans_membership_expr ctx cont typ loc expr alternatives =
   trans_membership_expr_ ctx cont typ loc expr (alternatives :> [Expr.t | SubtypeIndication.t] list)
+
+
+let trans_assignments ctx ada_typ loc dest_instrs dests lal_expr =
+  trans_assignments ctx ada_typ loc dest_instrs dests (lal_expr :> Expr.t)

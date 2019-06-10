@@ -15,28 +15,6 @@ open AdaType
 open Option.Monad_infix
 module L = Logging
 
-(** Translate an assignment to a list of statements *)
-let trans_assignment ctx orig_node precise_typ dest_instrs dest_expr expr =
-  let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv precise_typ in
-  let loc = location ctx.source_file orig_node in
-  let f simple_expr =
-    let expr_instrs, exp = to_exp simple_expr in
-    let assignment = Sil.Store (dest_expr, typ, exp, loc) in
-    let instrs = dest_instrs @ expr_instrs @ [assignment] in
-    let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
-    let range_check_stmts =
-      match precise_typ with
-      | Discrete discrete ->
-          let load_instrs, loaded = load typ loc dest_expr in
-          range_check ctx loc discrete (dest_instrs @ load_instrs) loaded
-      | _ ->
-          []
-    in
-    Block {instrs; loc; nodekind} :: range_check_stmts
-  in
-  map_to_stmts ~f loc expr
-
-
 (** Translate the libadalang statements called "SimpleStmt" *)
 let trans_simple_stmt ctx simple_stmt =
   let loc = location ctx.source_file simple_stmt in
@@ -44,18 +22,12 @@ let trans_simple_stmt ctx simple_stmt =
   | `AssignStmt {f_dest; f_expr} ->
       let precise_typ = trans_type_of_expr ctx.tenvs.ada_tenv f_dest in
       let dest_stmts, (dest_instrs, dest_expr) = trans_lvalue ctx f_dest in
-      let stmts, result = trans_expr ctx Inline f_expr in
-      dest_stmts @ stmts
-      @ trans_assignment ctx simple_stmt precise_typ dest_instrs dest_expr result
+      dest_stmts @ trans_assignments ctx precise_typ loc dest_instrs [dest_expr] f_expr
   | `ReturnStmt {f_return_expr= Some expr} -> (
     match ctx.ret_type with
     | Some type_expr ->
         let return = Exp.Lvar (Pvar.mk Ident.name_return (Procdesc.get_proc_name ctx.proc_desc)) in
-        let stmts, result = trans_expr ctx Inline expr in
-        stmts
-        @ trans_assignment ctx simple_stmt
-            (trans_type_expr ctx.tenvs.ada_tenv type_expr)
-            [] return result
+        trans_assignments ctx (trans_type_expr ctx.tenvs.ada_tenv type_expr) loc [] [return] expr
     | None ->
         L.die InternalError "The function should have a return type" )
   | `ReturnStmt {f_return_expr= None} ->
@@ -435,11 +407,15 @@ and trans_default_decl ctx decl ada_typ names =
       trans_array_decl ctx decl names ada_typ
   | Access _ ->
       (* An access type is always initialized by default to null *)
+      let loc = location ctx.source_file decl in
       let f id =
         let pvar = pvar ctx id in
-        trans_assignment ctx decl ada_typ [] (Exp.Lvar pvar) (of_exp [] Exp.null)
+        let typ = to_infer_typ ctx.tenvs.ada_tenv ctx.tenvs.infer_tenv ada_typ in
+        let assignment = Sil.Store (Exp.Lvar pvar, typ, Exp.null, loc) in
+        let nodekind = Procdesc.Node.(Stmt_node (Call "assign")) in
+        Block {instrs= [assignment]; loc; nodekind}
       in
-      List.concat_map ~f names
+      List.map ~f names
   | _ ->
       []
 
@@ -454,12 +430,10 @@ and trans_decl ctx decl =
         (* Check if there is a default expression and store it if there is one *)
         match f_default_expr with
         | Some default_expr ->
-            let stmts, expr = trans_expr ctx Inline default_expr in
-            let f id =
-              let pvar = pvar ctx id in
-              trans_assignment ctx decl ada_typ [] (Exp.Lvar pvar) expr
-            in
-            stmts @ List.concat_map ~f names
+            let loc = location ctx.source_file decl in
+            let f id = Exp.Lvar (pvar ctx id) in
+            let dests = List.map ~f names in
+            trans_assignments ctx ada_typ loc [] dests default_expr
         | None ->
             (* If not, some types have some default values *)
             trans_default_decl ctx decl ada_typ names
