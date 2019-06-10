@@ -35,6 +35,8 @@ let field_name name = AdaNode.text (name :> DefiningName.t) |> Typ.Fieldname.Ada
 
 let is_access attribute = String.equal (String.lowercase (AdaNode.text attribute)) "access"
 
+let is_assert pragma = String.equal (String.lowercase (AdaNode.text pragma)) "assert"
+
 let rec is_type_def ~f type_expr =
   (* Given a predicate on a type def, return true if the base type def of the
    * given type expression returns true when applied to f *)

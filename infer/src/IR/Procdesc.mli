@@ -69,7 +69,7 @@ module Node : sig
     | ThrowNPE
     | UnaryOperator
 
-  type ada_check = RangeCheck | IndexCheck | AccessCheck | DiscriminantCheck
+  type ada_check = RangeCheck | IndexCheck | AccessCheck | DiscriminantCheck | ContractCheck
 
   type prune_node_kind =
     | PruneNodeKind_ExceptionHandler

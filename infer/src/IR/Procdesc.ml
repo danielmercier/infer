@@ -73,7 +73,8 @@ module Node = struct
     | UnaryOperator
   [@@deriving compare]
 
-  type ada_check = RangeCheck | IndexCheck | AccessCheck | DiscriminantCheck [@@deriving compare]
+  type ada_check = RangeCheck | IndexCheck | AccessCheck | DiscriminantCheck | ContractCheck
+  [@@deriving compare]
 
   type prune_node_kind =
     | PruneNodeKind_ExceptionHandler

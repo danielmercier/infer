@@ -34,6 +34,9 @@ val field_name : [< DefiningName.t] -> Typ.Fieldname.t
 val is_access : Identifier.t -> bool
 (** Return true if the identifier is refering to 'Access *)
 
+val is_assert : Identifier.t -> bool
+(** Return true if the identifier is refering to Assert *)
+
 val is_array_type : [< TypeExpr.t] -> bool
 (** Check if the given TypeExpr is a type expression of an array *)
 

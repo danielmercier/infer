@@ -343,11 +343,28 @@ and trans_composite_stmt ctx composite_stmt =
       unimplemented "trans_composite_stmt for %s" (AdaNode.short_image composite_stmt)
 
 
+and trans_pragma_node ctx pragma_node =
+  match%nolazy (pragma_node :> PragmaNode.t) with
+  | `PragmaNode {f_id; f_args= Some (`BaseAssocList {list= [`PragmaArgumentAssoc {f_expr}]})}
+    when is_assert f_id ->
+      let loc = location ctx.source_file pragma_node in
+      let stmts, (instrs, exp) = trans_expr ctx (Tmp "assert") f_expr in
+      let instrs = instrs @ [Sil.Prune (exp, loc, true, Sil.Ik_bexp)] in
+      let nodekind =
+        Procdesc.Node.Prune_node (true, Sil.Ik_bexp, PruneNodeKind_AdaCheck ContractCheck)
+      in
+      stmts @ [Block {instrs; loc; nodekind}]
+  | _ ->
+      []
+
+
 and trans_stmts ctx stmt_list =
   let trans_stmt node =
-    match node with
+    match%nolazy node with
     | #Stmt.t as stmt ->
         trans_stmt ctx stmt
+    | #PragmaNode.t as pragma_node ->
+        trans_pragma_node ctx pragma_node
     | _ ->
         unimplemented "trans_stmt from trans_stmts for %s" (AdaNode.short_image node)
   in
